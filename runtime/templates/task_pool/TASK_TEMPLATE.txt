@@ -1,0 +1,13 @@
+FROM: <派发者ID>
+TO: <接收者ID>
+TASK_ID: <任务ID>
+FEATURE_ID: <功能ID>
+ROLE: <角色类型>
+TIMEOUT: <超时秒数>
+WORKSPACE: <工作区路径>
+PROGRESS_FILE: <进度文件路径>
+OUTBOX_FILE: <汇报文件路径>
+STATUS_FILE: <状态文件路径>
+DONE_DIR: <归档目录路径>
+---
+<具体任务指令>

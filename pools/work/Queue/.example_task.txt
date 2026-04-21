@@ -1,0 +1,18 @@
+TASK_ID: t_001
+FEATURE_ID: feature_example
+FROM: brain
+POOL: work
+---
+=== TASK ===
+请修改以下文件：
+
+ADD: pools/work/Outbox/example_output.txt
+  创建一个示例输出文件，内容为 "Hello from Work Pool"
+
+MODIFY: (无)
+
+DELETE: (无)
+
+=== CONSTRAINTS ===
+- 只允许修改上述列出的文件
+- 不得修改其他文件

@@ -1,0 +1,267 @@
+# MultiAgentWorkspace 1.0 交接快照
+
+> 最后更新：2026-04-20
+> 状态：Work / Thinking / Construct Runtime 已落地，POST Registry / Runtime / CLI 已具备基础闭环，thinking -> construct 已支持 txt 与目录型产物投递
+
+---
+
+## 当前系统状态
+
+### 已落地的池
+1. **Work Pool** - 完全可用
+   - 5 个并行 worker 槽位（worker_01 ~ worker_05）
+   - 自动槽位识别
+   - 完整生命周期：online -> start_writing -> done
+   - 产物自动搬运到 Outbox
+   - 超时保护与兜底 done 信号
+
+2. **Thinking Pool** - 已验证可用
+   - 2 个子脑槽位（sub_brain_01, sub_brain_02）
+   - 生命周期：online -> start_thinking -> start_summarizing -> done
+   - 能够接收复杂需求并拆解成原子任务
+   - 产物自动搬运到 Outbox（包括 timeout 情况）
+   - 默认超时 300s（建议调整为 1800s）
+
+3. **Construct Pool** - Runtime 已落地
+   - Construct Runtime 已完整落地：`runtime/app/runtimes/construct_runtime.py`
+   - 1 个 constructor 槽位已存在：`constructor_01`
+   - 生命周期：online -> start_architecting -> start_finalizing -> done
+   - 已支持 Queue 文件夹输入自动预处理为 `fields/{batch_id}/input/`
+   - 已支持生成 batch reference txt 并派发到 constructor 槽位
+   - 已支持产物收集到 `pools/construct/Outbox/{task_id}/`
+   - 已具备超时保护与 fallback done 兜底释放机制
+   - `runtime/tests/test_construct_runtime.py` 当前包含 16 个测试函数，覆盖 Runtime 编排与终态管理能力
+
+4. **POST Runtime / Registry / CLI** - 基础闭环已落地
+   - 已具备 POST Registry、POST Runtime、main_post.py 与基础 CLI 工具
+   - 已支持扫描 batch / branch、依赖等待、blocked 跳过、transfer 记录
+   - `thinking -> construct` 已支持 txt 与目录型产物投递
+
+### 待继续完善的池 / 层
+5. **Gate Pool** - 未实现
+   - 职责：监督 + 路由 + 进度汇总
+   - 不直接派发任务，而是监控和协调
+
+6. **Task Pool** - 未实现
+   - 职责：任务层入口
+
+---
+
+## 架构分层（已确认）
+
+```
+用户需求
+    ↓
+Task Pool (任务层入口)
+    ↓
+Thinking Pool (拆解需求 → 原子任务规格)
+    ↓
+POST Runtime (批次扫描与投递)
+    ↓
+Construct Runtime (层内搬运、field 落位、派发、进程/信号管理)
+    ↓
+constructor Agent (具体架构分析与工单撰写)
+    ↓
+Gate Pool (监督 + 路由，待实现)
+    ↓
+Work Pool (执行 → 写入统一项目根)
+    ↓
+产物输出
+```
+
+### 关键设计原则
+- **Thinking 只负责拆解**：输出任务意图和说明，不负责项目落地目录
+- **POST 负责完整性投递**：等待整个 batch 完成后再投递到 Construct
+- **Construct Runtime 只负责运送与管理**：负责 field 落位、任务派发、槽位/进程/信号/超时管理
+- **constructor Agent 负责具体执行**：负责读取 batch 输入并实际产出 `work_task_*.txt`
+- **Work 直接写入项目根**：不再各自在独立 workspace 产出
+- **Outbox 只记录证据/摘要/必要结果**：不承担项目文件主存储
+
+---
+
+## Construct Pool 当前实现细节
+
+### Runtime 已确认实现的能力
+- POST 可将 Thinking Outbox 的 txt 或目录型产物投递到 `pools/construct/Queue/`
+- ConstructRuntime 在 `list_queue_tasks()` 中先执行 `_preprocess_queue_folders()`：
+  - 识别 Queue 中的目录项
+  - 提取 `BATCH_ID`（优先读 `summary.txt`，否则回退目录名）
+  - 将目录内容移动到 `pools/construct/fields/{batch_id}/input/`
+  - 自动生成 `task_batch_{batch_id}.txt` 引用任务
+  - 写入 `meta/batch_info.json`
+- Runtime 负责：
+  - 派发任务到 constructor 槽位
+  - 生成 launch bat
+  - 管理进程生命周期
+  - 接收并处理 terminal signals
+  - 超时回收与 artifact 收集
+  - 在 batch 终态后清理对应 field 目录
+
+### 不属于 Runtime 的能力
+- Runtime **不直接**做业务架构分析
+- Runtime **不直接**写出最终 `work_task_*.txt`
+- Runtime **不直接**决定 `TARGET_FILE`、`METHOD`、类签名等工程细节
+- 上述具体操作由 constructor Agent 在运行时完成
+
+### 当前运行链路
+- Constructor 接收 `task_batch_{batch_id}.txt`
+- constructor Agent 从 `BATCH_FIELD/input/` 读取 summary 与 task 文件
+- constructor Agent 在 `BATCH_FIELD/output/` 产出 `work_task_*.txt`
+- Runtime 在终态时自动收集 workspace 产物到 Outbox
+- 若任务为 `batch_*`，Runtime 完成后会自动清理对应 `fields/{batch_id}/`
+
+### 关键保障
+- 派发锁：`threading.RLock()` 避免并发重复派发
+- `.processing` 改名占位，避免同一 queue 文件被重复消费
+- 派发失败回滚：恢复 queue 文件并清理 slot 污染
+- fallback done：Claude 进程提前退出时由 bat 尾部强制补发 done 信号
+- timeout 收敛：超时写 terminal event、回收进程、保留产物、释放槽位
+
+---
+
+## 今日重要状态同步（2026-04-20）
+
+### 1. Construct Pool 已从“设计中”升级为“Runtime 已实现”
+**变化**：此前快照仍将 Construct 视为待设计/待实现；现已确认 Runtime、状态机、工具链与测试文件均已落地。
+
+### 2. Construct 可消费目录型 batch
+**变化**：不仅可接收 txt 任务，也可直接接收 POST 投递的目录型工程产物。
+
+### 3. Thinking → POST → Construct 主链已打通到 Construct Queue / field 层
+**状态**：POST 目录投递能力已完成；Construct 目录 intake 与 field 化已完成；constructor Agent 的真实输出质量仍待闭环验收。
+
+---
+
+## 当前待办事项
+
+### P0 - 阻塞性问题
+1. 执行真实 Thinking → POST → Construct 闭环验证
+2. 验证 constructor Agent 在真实 batch 上产出的 `work_task_*.txt` 是否满足要求
+
+### P1 - 架构完善
+1. 补 Construct 层 `output/` 到 Work Queue 的稳定投递机制
+2. 验证 Work Pool 围绕统一项目根协作
+3. 补齐 Gate Pool 的监督与路由层
+
+### P2 - 优化改进
+1. 自动创建更多 `constructor_*` 槽位
+2. 为 batch 主产物选择补充 manifest/规则
+3. 加强重复扫描下的幂等保护与全链路审计
+
+---
+
+## 关键文件位置
+
+### 文档
+- 开发手册：`MultiAgentWorkspace1.0开发手册.md`
+- 本快照：`brain/handoff_snapshot.txt`
+- Thinking Pool 交接文档：`THINKINGPOOL_HANDOVER.md`
+- Construct Pool 交接文档：`CONSTRUCTPOOL_HANDOVER.md`
+- Work Pool 交接文档：`WORKPOOL_HANDOVER.md`
+
+### Runtime 代码
+- Work Runtime：`runtime/app/runtimes/work_runtime.py`
+- Thinking Runtime：`runtime/app/runtimes/thinking_runtime.py`
+- Construct Runtime：`runtime/app/runtimes/construct_runtime.py`
+- POST Runtime：`runtime/app/runtimes/post_runtime.py`
+- Work Runtime 入口：`runtime/app/main.py`
+- Thinking Runtime 入口：`runtime/app/main_thinking.py`
+- Construct Runtime 入口：`runtime/app/main_construct.py`
+- POST Runtime 入口：`runtime/app/main_post.py`
+
+### 测试
+- Work Runtime 测试：`runtime/tests/test_work_runtime*.py`
+- Thinking Runtime 测试：`runtime/tests/test_thinking_runtime*.py`
+- Construct Runtime 测试：`runtime/tests/test_construct_runtime.py`（当前 16 个测试函数，覆盖 Runtime 编排能力）
+- POST Registry 测试：`runtime/tests/test_post_registry.py`
+- POST Runtime 测试：`runtime/tests/test_post_runtime.py`
+
+---
+
+## Runtime 启动命令
+
+### Work Pool Runtime
+```bash
+cd C:/Users/lenovo/Desktop/MultiAgentWorkspace1.0/runtime
+export PYTHONPATH=C:/Users/lenovo/Desktop/MultiAgentWorkspace1.0/runtime
+python app/main.py --poll-interval 2.0
+```
+
+### Thinking Pool Runtime
+```bash
+cd C:/Users/lenovo/Desktop/MultiAgentWorkspace1.0/runtime
+export PYTHONPATH=C:/Users/lenovo/Desktop/MultiAgentWorkspace1.0/runtime
+python app/main_thinking.py --poll-interval 2.0
+```
+
+### Construct Pool Runtime
+```bash
+cd C:/Users/lenovo/Desktop/MultiAgentWorkspace1.0/runtime
+export PYTHONPATH=C:/Users/lenovo/Desktop/MultiAgentWorkspace1.0/runtime
+python -m app.main_construct "C:/Users/lenovo/Desktop/MultiAgentWorkspace1.0"
+```
+
+### POST Runtime
+```bash
+cd C:/Users/lenovo/Desktop/MultiAgentWorkspace1.0/runtime
+export PYTHONPATH=C:/Users/lenovo/Desktop/MultiAgentWorkspace1.0/runtime
+python -m app.main_post "C:/Users/lenovo/Desktop/MultiAgentWorkspace1.0"
+```
+
+---
+
+## 已知限制
+
+1. **Thinking Pool 超时时间偏短**
+   - 当前 300s 对复杂架构设计不够
+   - 建议改为 1800s（30分钟）
+
+2. **Construct 真实闭环尚未完成最终验收**
+   - 当前已确认 Runtime 编排与管理能力
+   - 但 constructor Agent 的真实批次处理与工单质量仍需实战验证
+
+3. **Work Pool 统一项目根协作仍待完整联调**
+   - Construct 层的 field 化与派发能力已具备
+   - 但 Work 侧围绕统一项目根的闭环还需验证
+
+4. **Gate Pool 尚未实现**
+   - 当前主链可暂时绕过 Gate 完成局部验证
+   - 完整监督/路由层仍需后续补齐
+
+---
+
+## 测试覆盖率
+
+### Work Pool
+- 单元测试：24/24 passed
+- 集成测试：已验证 5 worker 并发
+- E2E 测试：已验证完整生命周期
+
+### Thinking Pool
+- 单元测试：基础测试通过
+- 集成测试：已验证信号流转
+- E2E 测试：已验证真实拆解任务（虽然超时但产物完整）
+
+### Construct Pool
+- 测试文件：`runtime/tests/test_construct_runtime.py`
+- 当前测试函数数：16
+- 覆盖：动态槽位、派发、目录预处理、reference txt 生成、done 清理、timeout 回收、artifact 收集、batch field 清理、fallback done 相关 bat 校验
+- 真实闭环：待执行
+
+### POST
+- Registry：测试文件已存在
+- Runtime：测试文件已存在
+
+---
+
+## 交接检查清单
+
+- [x] Work Pool 可独立运行
+- [x] Thinking Pool 可独立运行
+- [x] Construct Runtime 已实现
+- [x] POST Runtime 已支持目录型投递到 Construct
+- [x] 构建主链层级已更新到 Thinking → POST → Construct Runtime → constructor Agent → Work
+- [ ] Construct 真实闭环验证
+- [ ] Work 统一项目根联调
+- [ ] Gate Pool 监督机制
+- [ ] 完整主链流转验证
