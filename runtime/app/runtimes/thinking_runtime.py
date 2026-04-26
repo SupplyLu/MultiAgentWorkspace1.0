@@ -19,7 +19,6 @@ import fnmatch
 import re
 
 from app.services.signal_server import RuntimeSignalServer
-from app.services.post_service import PostService
 from app.shared.launch_manager import LaunchManager, LaunchRequest
 from app.shared.shutdown_manager import ShutdownManager
 from app.shared.file_queue import parse_task_file
@@ -128,6 +127,7 @@ class ThinkingRuntime:
             event_store_dir=self._root_dir / "events" / "thinking",
         )
         self._signal_server.on_signal = self.handle_signal
+        self._signal_server.on_api_request = self.handle_api_request
 
         # Managers - 独立实例，不共享
         self._launch_manager = LaunchManager()
@@ -137,6 +137,9 @@ class ThinkingRuntime:
 
         # Lock to protect slot state from concurrent access
         self._lock = threading.RLock()
+
+        # Pause control state
+        self._paused = False
 
     def _init_slots(self) -> None:
         """Initialize thinking slots by dynamically scanning sub_brain_* directories."""
@@ -175,7 +178,7 @@ class ThinkingRuntime:
             "StartSummarizing.bat",
             "Done.bat",
             "signal_bridge.py",
-            "BOOTSTRAP.txt",
+            "THINKING_BOOTSTRAP.txt",
         ]
         for file_name in lifecycle_files:
             src = tools_dir / file_name
@@ -248,6 +251,9 @@ class ThinkingRuntime:
 
     def dispatch_next(self, dry_run: bool = True) -> dict[str, Any]:
         """Dispatch the next task to an idle thinking slot."""
+        if self._paused:
+            return {"dispatched": False, "error": "Runtime is paused"}
+
         # [Concurrency Fix] Find next idle slot and mark it busy immediately under lock
         slot = None
         task_file = None
@@ -348,7 +354,7 @@ set "SIGNAL_SERVER_PORT={self._signal_port}"
 
 cd /d "%~dp0"
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDECODE = $null; & 'claude.cmd' --dangerously-skip-permissions 'Read and strictly follow all instructions in BOOTSTRAP.txt in the current directory.'"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDECODE = $null; & 'claude.cmd' --dangerously-skip-permissions 'Read and strictly follow all instructions in THINKING_BOOTSTRAP.txt in the current directory.'"
 
 REM [Work Pool 踩坑] Fallback: if Claude exits without calling Done.bat (e.g. end_turn stop_reason),
 REM this ensures the terminal signal is sent so the slot is released without timeout.
@@ -585,3 +591,65 @@ exit /b %ERRORLEVEL%
     def stop(self) -> None:
         """Stop the signal server."""
         self._signal_server.stop()
+
+    def handle_api_request(self, method: str, path: str, payload: dict | None) -> dict[str, Any]:
+        """Handle API requests for runtime status and health."""
+        if method == "GET" and path == "/api/status":
+            return self._get_status()
+        elif method == "GET" and path == "/api/health":
+            return self._get_health()
+        elif method == "POST" and path == "/api/control/pause":
+            return self._pause()
+        elif method == "POST" and path == "/api/control/resume":
+            return self._resume()
+        elif method == "GET" and path == "/api/control/state":
+            return self._get_control_state()
+        else:
+            return {"error": "unknown endpoint"}
+
+    def _pause(self) -> dict[str, Any]:
+        """Pause runtime task dispatch."""
+        self._paused = True
+        return self._get_control_state()
+
+    def _resume(self) -> dict[str, Any]:
+        """Resume runtime task dispatch."""
+        self._paused = False
+        return self._get_control_state()
+
+    def _get_control_state(self) -> dict[str, Any]:
+        """Return control state for pause/resume."""
+        return {
+            "paused": self._paused,
+            "pool": "thinking",
+        }
+
+    def _get_status(self) -> dict[str, Any]:
+        """Return current runtime status with pool info and slot states."""
+        with self._lock:
+            slots_data = []
+            for slot_id in sorted(self._slots.keys()):
+                slot = self._slots[slot_id]
+                slots_data.append({
+                    "slot_id": slot.slot_id,
+                    "busy": slot.busy,
+                    "assigned_task_id": slot.assigned_task_id,
+                })
+
+            queue_count = len(self.list_queue_tasks())
+
+            return {
+                "pool": "thinking",
+                "signal_port": self._signal_port,
+                "is_running": self._signal_server.is_running,
+                "queue_count": queue_count,
+                "slots": slots_data,
+            }
+
+    def _get_health(self) -> dict[str, Any]:
+        """Return basic health check information."""
+        return {
+            "ok": True,
+            "pool": "thinking",
+            "uptime_seconds": 0,
+        }

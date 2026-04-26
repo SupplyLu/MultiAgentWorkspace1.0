@@ -10,7 +10,7 @@ def _make_tools(tmp_path: Path) -> Path:
     """Create minimal lifecycle tools directory."""
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
     return tools_dir
 

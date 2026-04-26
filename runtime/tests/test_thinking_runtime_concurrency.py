@@ -30,7 +30,7 @@ def test_concurrent_dispatch_slot_reservation_race(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create two tasks
@@ -262,7 +262,7 @@ def test_get_next_idle_slot_thread_safe(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     runtime = ThinkingRuntime(root_dir=tmp_path, signal_port=19104)

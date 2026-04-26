@@ -25,7 +25,6 @@ import threading
 import fnmatch
 
 from app.services.signal_server import RuntimeSignalServer
-from app.services.post_service import PostService
 from app.shared.launch_manager import LaunchManager, LaunchRequest
 from app.shared.shutdown_manager import ShutdownManager
 from app.shared.file_queue import parse_task_file
@@ -79,6 +78,7 @@ class ConstructorSlot:
     slot_dir: Path
     workspace_dir: Path
     busy: bool = False
+    finalizing: bool = False
     assigned_task_id: str = ""
     launch_result: dict[str, Any] | None = None
     assigned_at_epoch: float = 0.0
@@ -118,6 +118,7 @@ class ConstructRuntime:
             event_store_dir=self._root_dir / "events" / "construct",
         )
         self._signal_server.on_signal = self.handle_signal
+        self._signal_server.on_api_request = self.handle_api_request
 
         # Managers - 独立实例，不共享
         self._launch_manager = LaunchManager()
@@ -127,6 +128,9 @@ class ConstructRuntime:
 
         # Lock to protect slot state from concurrent access
         self._lock = threading.RLock()
+
+        # Pause control state
+        self._paused = False
 
     def _init_slots(self) -> None:
         """Initialize constructor slots by dynamically scanning constructor_* directories."""
@@ -171,7 +175,7 @@ class ConstructRuntime:
         """Build the reference txt content for a batch task."""
         return f"""FROM: thinking_pool
 TO: constructor_01
-TASK_ID: batch_{batch_id}
+TASK_ID: {batch_id}
 FEATURE_ID: {batch_id}
 TIMEOUT: 1200
 INPUT_MODE: batch_dir
@@ -193,8 +197,12 @@ Analyze and generate strong-constrained work tasks for Work Pool:
      - class and method signatures
      - exact test targets
      - acceptance checklists
-  5. Output work tasks to BATCH_FIELD/output/
-  6. Call Done.bat when complete
+     - PROJECT_ROOT pointing to the Work field project root when needed
+  5. Write all generated deliverables, including every Work task file, into workspace/
+  6. Runtime will collect every file from workspace/ into Construct Outbox on terminal convergence
+  7. Do NOT write final deliverables to BATCH_FIELD/output/ or any location outside workspace/
+  8. Do NOT write any task file to downstream Queue; Construct only plans and specifies project roots
+  9. Call Done.bat when complete
 """
 
     def _preprocess_queue_folders(self) -> None:
@@ -233,7 +241,7 @@ Analyze and generate strong-constrained work tasks for Work Pool:
                 pass
 
             # Generate reference txt
-            ref_txt = self._queue_dir / f"task_batch_{batch_id}.txt"
+            ref_txt = self._queue_dir / f"task_{batch_id}.txt"
             if not ref_txt.exists():
                 ref_txt.write_text(
                     self._build_batch_task_txt(batch_id, field_dir),
@@ -265,7 +273,6 @@ Analyze and generate strong-constrained work tasks for Work Pool:
             "StartFinalizing.bat",
             "Done.bat",
             "signal_bridge.py",
-            "BOOTSTRAP.txt",
         ]
         for file_name in lifecycle_files:
             src = tools_dir / file_name
@@ -273,6 +280,18 @@ Analyze and generate strong-constrained work tasks for Work Pool:
                 raise FileNotFoundError(f"Missing required lifecycle tool: {src}")
             dst = slot.slot_dir / file_name
             dst.write_bytes(src.read_bytes())
+
+        construct_bootstrap = tools_dir / "CONSTRUCT_BOOTSTRAP.txt"
+        legacy_bootstrap = tools_dir / "BOOTSTRAP.txt"
+        if construct_bootstrap.exists():
+            bootstrap_src = construct_bootstrap
+        elif legacy_bootstrap.exists():
+            bootstrap_src = legacy_bootstrap
+        else:
+            raise FileNotFoundError(
+                f"Missing required lifecycle tool: {construct_bootstrap}"
+            )
+        (slot.slot_dir / "CONSTRUCT_BOOTSTRAP.txt").write_bytes(bootstrap_src.read_bytes())
 
     def _parse_timeout_seconds(self, headers: dict[str, Any]) -> int:
         """Parse TIMEOUT header safely with 20-minute default."""
@@ -291,7 +310,7 @@ Analyze and generate strong-constrained work tasks for Work Pool:
             slot_ids = sorted(self._slots.keys())
             for slot_id in slot_ids:
                 slot = self._slots[slot_id]
-                if not slot.busy:
+                if not slot.busy and not slot.finalizing:
                     return slot
             return None
 
@@ -342,6 +361,7 @@ Analyze and generate strong-constrained work tasks for Work Pool:
 
         # Reset slot fields
         slot.busy = False
+        slot.finalizing = False
         slot.assigned_task_id = ""
         slot.launch_result = None
         slot.assigned_at_epoch = 0.0
@@ -349,6 +369,9 @@ Analyze and generate strong-constrained work tasks for Work Pool:
 
     def dispatch_next(self, dry_run: bool = True) -> dict[str, Any]:
         """Dispatch the next task to an idle constructor slot."""
+        if self._paused:
+            return {"dispatched": False, "error": "Runtime is paused"}
+
         slot = None
         task_file = None
         original_name = ""
@@ -357,7 +380,7 @@ Analyze and generate strong-constrained work tasks for Work Pool:
             slot_ids = sorted(self._slots.keys())
             for slot_id in slot_ids:
                 candidate = self._slots[slot_id]
-                if not candidate.busy:
+                if not candidate.busy and not candidate.finalizing:
                     candidate.busy = True
                     slot = candidate
                     break
@@ -420,6 +443,16 @@ Analyze and generate strong-constrained work tasks for Work Pool:
         worker_task_file = slot.slot_dir / original_name
         worker_task_file.write_text(raw_content, encoding="utf-8")
 
+        batch_field_header = headers.get("BATCH_FIELD", "")
+        workspace_batch_dir: Path | None = None
+        if batch_field_header:
+            batch_field_dir = Path(str(batch_field_header))
+            if batch_field_dir.exists() and batch_field_dir.is_dir():
+                workspace_batch_dir = workspace_dir / batch_field_dir.name
+                if workspace_batch_dir.exists():
+                    shutil.rmtree(workspace_batch_dir)
+                shutil.copytree(batch_field_dir / "input", workspace_batch_dir)
+
         try:
             # Deploy lifecycle bats
             self._deploy_lifecycle_bats(slot)
@@ -441,7 +474,7 @@ cd /d "%~dp0"
 REM Ensure Work Pool fields directory exists
 if not exist "{self._fields_dir}" mkdir "{self._fields_dir}"
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDECODE = $null; & 'claude.cmd' --dangerously-skip-permissions 'Read and strictly follow all instructions in BOOTSTRAP.txt in the current directory.'"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDECODE = $null; & 'claude.cmd' --dangerously-skip-permissions 'Read and strictly follow all instructions in CONSTRUCT_BOOTSTRAP.txt in the current directory.'"
 
 REM Fallback: if Claude exits without calling Done.bat (e.g. end_turn stop_reason),
 REM this ensures the terminal signal is sent so the slot is released without timeout.
@@ -490,12 +523,20 @@ exit /b %ERRORLEVEL%
         }
 
     def _clean_slot_dir(self, slot: ConstructorSlot) -> None:
-        """Clean deployed files in slot directory, keeping only workspace/ intact."""
+        """Clean deployed files in slot directory and clear workspace contents."""
         if not slot.slot_dir.exists():
             return
 
         for item in slot.slot_dir.iterdir():
             if item.is_dir() and item.name == "workspace":
+                for workspace_item in item.iterdir():
+                    try:
+                        if workspace_item.is_file():
+                            workspace_item.unlink()
+                        elif workspace_item.is_dir():
+                            shutil.rmtree(workspace_item)
+                    except OSError:
+                        continue
                 continue
             try:
                 if item.is_file():
@@ -507,10 +548,7 @@ exit /b %ERRORLEVEL%
 
     def _cleanup_batch_field(self, slot: ConstructorSlot, task_id: str) -> None:
         """Remove batch field directory on task completion."""
-        if not task_id.startswith("batch_"):
-            return
-
-        batch_id = task_id.replace("batch_", "", 1)
+        batch_id = task_id
         field_dir = self._construct_fields_dir / batch_id
 
         if field_dir.exists():
@@ -568,6 +606,7 @@ exit /b %ERRORLEVEL%
 
         # Step 5: reset slot fields
         slot.busy = False
+        slot.finalizing = False
         slot.assigned_task_id = ""
         slot.launch_result = None
         slot.assigned_at_epoch = 0.0
@@ -609,10 +648,10 @@ exit /b %ERRORLEVEL%
         if should_finalize and slot is not None:
             with self._lock:
                 # Double-check busy to prevent done/timeout race
-                if not slot.busy or slot.assigned_task_id != task_id:
+                if slot.finalizing or not slot.busy or slot.assigned_task_id != task_id:
                     return
-                # Mark as finalizing to block timeout
-                slot.busy = False
+                # Mark as finalizing to block timeout and reuse until convergence completes
+                slot.finalizing = True
 
             self._finalize_slot_terminal(
                 slot,
@@ -628,10 +667,12 @@ exit /b %ERRORLEVEL%
         now = time.time()
         timed_out_slots: list[tuple[ConstructorSlot, str, int]] = []
 
-        # Narrow lock: only collect timed-out slots and mark busy false atomically
+        # Narrow lock: only collect timed-out slots and mark finalizing atomically
         with self._lock:
             for slot in self._slots.values():
                 if not slot.busy or not slot.assigned_task_id:
+                    continue
+                if slot.finalizing:
                     continue
                 if slot.assigned_at_epoch <= 0:
                     continue
@@ -640,7 +681,7 @@ exit /b %ERRORLEVEL%
 
                 task_id = slot.assigned_task_id
                 timeout_seconds = slot.timeout_seconds
-                slot.busy = False
+                slot.finalizing = True
                 timed_out_slots.append((slot, task_id, timeout_seconds))
 
         timed_out: list[dict[str, Any]] = []
@@ -696,3 +737,65 @@ exit /b %ERRORLEVEL%
     def stop(self) -> None:
         """Stop the signal server."""
         self._signal_server.stop()
+
+    def handle_api_request(self, method: str, path: str, payload: dict | None) -> dict[str, Any]:
+        """Handle API requests for runtime status and control."""
+        if method == "GET" and path == "/api/status":
+            return self._get_status()
+        elif method == "GET" and path == "/api/health":
+            return self._get_health()
+        elif method == "POST" and path == "/api/control/pause":
+            return self._pause()
+        elif method == "POST" and path == "/api/control/resume":
+            return self._resume()
+        elif method == "GET" and path == "/api/control/state":
+            return self._get_control_state()
+        else:
+            return {"error": "unknown endpoint"}
+
+    def _pause(self) -> dict[str, Any]:
+        """Pause runtime task dispatch."""
+        self._paused = True
+        return self._get_control_state()
+
+    def _resume(self) -> dict[str, Any]:
+        """Resume runtime task dispatch."""
+        self._paused = False
+        return self._get_control_state()
+
+    def _get_control_state(self) -> dict[str, Any]:
+        """Return control state for pause/resume."""
+        return {
+            "paused": self._paused,
+            "pool": "construct",
+        }
+
+    def _get_status(self) -> dict[str, Any]:
+        """Return current runtime status with pool info and slot states."""
+        with self._lock:
+            slots_data = []
+            for slot_id in sorted(self._slots.keys()):
+                slot = self._slots[slot_id]
+                slots_data.append({
+                    "slot_id": slot.slot_id,
+                    "busy": slot.busy,
+                    "assigned_task_id": slot.assigned_task_id,
+                })
+
+            queue_count = len(self.list_queue_tasks())
+
+            return {
+                "pool": "construct",
+                "signal_port": self._signal_port,
+                "is_running": self._signal_server.is_running,
+                "queue_count": queue_count,
+                "slots": slots_data,
+            }
+
+    def _get_health(self) -> dict[str, Any]:
+        """Return basic health check information."""
+        return {
+            "ok": True,
+            "pool": "construct",
+            "uptime_seconds": 0,
+        }

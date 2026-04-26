@@ -20,8 +20,15 @@ class SignalHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args):
         logger.info("%s - %s", self.address_string(), format % args)
 
+    def do_GET(self):
+        if self.path.startswith("/api/"):
+            self._handle_api_request("GET", None)
+        else:
+            self.send_error(404)
+
     def do_POST(self):
-        if self.path != "/signal":
+        # Route check first - unknown routes return 404 before parsing body
+        if self.path != "/signal" and not self.path.startswith("/api/"):
             self.send_error(404)
             return
 
@@ -31,11 +38,44 @@ class SignalHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(body)
         except json.JSONDecodeError:
-            self.send_error(400)
+            if self.path.startswith("/api/"):
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"reason": "malformed JSON"}, ensure_ascii=False).encode("utf-8"))
+            else:
+                self.send_error(400)
             return
 
+        if self.path == "/signal":
+            server = cast("SignalHTTPServer", self.server)
+            result = server.runtime_server.process_signal(payload)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        elif self.path.startswith("/api/"):
+            self._handle_api_request("POST", payload)
+
+    def _handle_api_request(self, method: str, payload: dict | None):
         server = cast("SignalHTTPServer", self.server)
-        result = server.runtime_server.process_signal(payload)
+        if server.runtime_server.on_api_request is None:
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"reason": "no API handler registered"}, ensure_ascii=False).encode("utf-8"))
+            return
+
+        try:
+            result = server.runtime_server.on_api_request(method, self.path, payload)
+        except Exception as e:
+            logger.error("API handler exception: %s", e, exc_info=True)
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"reason": "api handler failed"}, ensure_ascii=False).encode("utf-8"))
+            return
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -69,6 +109,7 @@ class RuntimeSignalServer:
         self._httpd: SignalHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.on_signal: Callable[[dict[str, Any]], None] | None = None
+        self.on_api_request: Callable[[str, str, dict[str, Any] | None], Any] | None = None
 
     def process_signal(self, payload: dict[str, Any]) -> dict[str, Any]:
         """处理信号，返回结果"""

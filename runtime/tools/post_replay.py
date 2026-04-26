@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI tool to replay a batch or specific branch delivery."""
+"""CLI tool to replay a project delivery."""
 
 import argparse
 import sys
@@ -12,70 +12,45 @@ from tools.post_common import add_root_dir_argument, build_registry_from_args, p
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Replay delivery for a POST batch or specific branch."
+        description="Replay delivery for a POST project."
     )
     add_root_dir_argument(parser)
-    parser.add_argument("--batch-id", required=True, help="ID of the batch to replay")
-    parser.add_argument(
-        "--branch-id",
-        help="ID of specific branch to replay (if omitted, replays all branches)",
-    )
-    parser.add_argument(
-        "--reason",
-        default="",
-        help="Reason for replay",
-    )
+    parser.add_argument("--project-key", required=True, help="Key of the project to replay")
     args = parser.parse_args()
 
     registry = build_registry_from_args(args)
 
-    # Get batch to verify it exists
-    batch = registry.get_batch(args.batch_id)
-    if batch is None:
-        print(f"Error: Batch {args.batch_id} not found", file=sys.stderr)
+    # Get project to verify it exists
+    project = registry.get_project(args.project_key)
+    if project is None:
+        print(f"Error: Project {args.project_key} not found", file=sys.stderr)
         sys.exit(1)
 
-    # Get branches
-    branches = registry.get_branches(args.batch_id)
-    if not branches:
-        print(f"Error: No branches found for batch {args.batch_id}", file=sys.stderr)
-        sys.exit(1)
+    # Reset project to registered status and reset cursor to beginning
+    route = project.get("route", [project["from_pool"], project["to_pool"]])
+    cursor = 0
+    current_pool = route[cursor]
+    next_pool = route[cursor + 1] if cursor + 1 < len(route) else None
 
-    # Filter to specific branch if requested
-    if args.branch_id:
-        branches = [b for b in branches if b["branch_id"] == args.branch_id]
-        if not branches:
-            print(
-                f"Error: Branch {args.branch_id} not found in batch {args.batch_id}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    # Reset branch statuses to pending to trigger re-delivery
-    replayed_branches = []
-    for branch in branches:
-        updated = registry.update_branch(
-            batch_id=args.batch_id,
-            branch_id=branch["branch_id"],
-            updates={"status": "pending", "completed_at": None},
-        )
-        if updated:
-            replayed_branches.append(updated)
-
-    # Reset batch status to registered (from delivered)
-    registry.update_batch(args.batch_id, {"status": "registered"})
+    registry.update_project(
+        args.project_key,
+        {
+            "status": "registered",
+            "cursor": cursor,
+            "current_pool": current_pool,
+            "next_pool": next_pool,
+        }
+    )
 
     # Record manager action
     action = registry.record_manager_action(
-        batch_id=args.batch_id,
+        project_key=args.project_key,
         action_type="replay",
-        detail=args.reason
-        or f"Replayed {len(replayed_branches)} branch(es) for batch {args.batch_id}",
+        detail=f"Replayed project {args.project_key}",
     )
 
     result = {
-        "batch_id": args.batch_id,
-        "replayed_branches": [b["branch_id"] for b in replayed_branches],
+        "project_key": args.project_key,
         "action": action,
     }
 

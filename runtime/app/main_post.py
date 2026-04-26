@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
 from pathlib import Path
 
 from app.runtimes.post_runtime import PostRuntime
+from app.services.runtime_registry import RuntimeRegistry
 
 
 def setup_logging(log_file: Path) -> logging.Logger:
@@ -73,13 +75,29 @@ def main():
     logger.info(f"Starting POST Runtime (root_dir={root_dir}, scan_interval={args.scan_interval})")
 
     runtime = build_runtime(str(root_dir), args.scan_interval)
+    registry = RuntimeRegistry(root_dir=root_dir)
+    registry.register(
+        pool="post",
+        pid=os.getpid(),
+        port=0,
+        status="running"
+    )
 
     def shutdown_handler(signum, frame):
         logger.info("Received shutdown signal, stopping POST Runtime...")
+        registry.register(
+            pool="post",
+            pid=os.getpid(),
+            port=0,
+            status="stopped"
+        )
+        logger.info("已更新 RuntimeRegistry 状态为 stopped")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, shutdown_handler)
 
     if args.once:
         runtime.scan_once()
@@ -89,6 +107,7 @@ def main():
     while True:
         try:
             runtime.scan_once()
+            registry.heartbeat("post")
             logger.info(f"Scan cycle complete. Sleeping {args.scan_interval}s...")
             time.sleep(args.scan_interval)
         except Exception as e:

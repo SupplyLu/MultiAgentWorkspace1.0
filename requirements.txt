@@ -11,4 +11,7 @@ pytest-asyncio==1.3.0
 # Optional compatibility helper
 pywin32-ctypes==0.2.3
 
+# Desktop UI framework
+PySide6>=6.6.0
+
 # Note: Claude CLI must be installed and available in PATH

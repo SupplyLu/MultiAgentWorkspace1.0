@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI tool to delete (skip) a branch."""
+"""CLI tool to skip a project."""
 
 import argparse
 import sys
@@ -11,20 +11,27 @@ from tools.post_common import add_root_dir_argument, build_registry_from_args, p
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Mark a POST branch as skipped.")
+    parser = argparse.ArgumentParser(description="Mark a POST project as skipped.")
     add_root_dir_argument(parser)
-    parser.add_argument("--batch-id", required=True, help="ID of the batch")
-    parser.add_argument("--branch-id", required=True, help="ID of the branch to delete/skip")
+    parser.add_argument("--project-key", required=True, help="Key of the project to skip")
+    parser.add_argument("--reason", default="Project skipped by operator", help="Reason for skipping")
     args = parser.parse_args()
 
     registry = build_registry_from_args(args)
 
-    result = registry.update_branch(args.batch_id, args.branch_id, {"status": "skipped"})
+    result = registry.update_project(
+        args.project_key,
+        {"status": "skipped", "skipped_reason": args.reason},
+    )
 
     if result is None:
         raise SystemExit(1)
 
-    # Optional: could record manager action here
+    registry.record_manager_action(
+        project_key=args.project_key,
+        action_type="skip",
+        detail=args.reason,
+    )
 
     print_json(result)
 

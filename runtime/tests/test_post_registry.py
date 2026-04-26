@@ -1,113 +1,274 @@
+import json
 from pathlib import Path
 
+import pytest
+
 from app.services.post_registry import PostRegistry
+
+
+def _register_project(registry: PostRegistry) -> dict:
+    return registry.register_project(
+        project_key="proj_001",
+        from_pool="task",
+        to_pool="thinking",
+        route=["task", "thinking", "construct"],
+    )
 
 
 def test_registry_initializes_required_directories(tmp_path: Path):
     registry = PostRegistry(root_dir=tmp_path)
 
-    assert (tmp_path / "transfers" / "batches").exists()
+    assert (tmp_path / "transfers" / "projects").exists()
     assert (tmp_path / "transfers" / "dependencies").exists()
-    assert (tmp_path / "transfers" / "transfers").exists()
+    assert (tmp_path / "transfers" / "deliveries").exists()
     assert (tmp_path / "transfers" / "manager_actions").exists()
     assert (tmp_path / "transfers" / "post_index.json").exists()
 
 
-def test_register_batch_persists_batch_and_branches(tmp_path: Path):
+def test_register_project_persists_project_record(tmp_path: Path):
     registry = PostRegistry(root_dir=tmp_path)
 
-    result = registry.register_batch(
-        batch_id="feat_001",
-        name="login feature",
+    result = registry.register_project(
+        project_key="proj_001",
         from_pool="task",
         to_pool="thinking",
-        branches=[
-            {
-                "branch_id": "feat_001_b1",
-                "feature_id": "login_ui",
-                "task_body": "task one",
-                "outbox_path": "pools/thinking/Outbox/feat_001_b1",
-            },
-            {
-                "branch_id": "feat_001_b2",
-                "feature_id": "login_api",
-                "task_body": "task two",
-                "outbox_path": "pools/thinking/Outbox/feat_001_b2",
-            },
-        ],
+        route=["task", "thinking", "construct"],
     )
 
-    assert result["batch_id"] == "feat_001"
-    assert len(registry.get_branches("feat_001")) == 2
-    assert registry.get_batch("feat_001")["status"] == "registered"
+    assert result["project_key"] == "proj_001"
+    assert result["status"] == "registered"
+    assert result["route"] == ["task", "thinking", "construct"]
+    assert result["cursor"] == 0
+    assert result["current_pool"] == "task"
+    assert result["next_pool"] == "thinking"
+    assert result["route_version"] == 1
+    assert registry.get_project("proj_001") == result
 
 
-def test_register_batch_is_idempotent(tmp_path: Path):
+def test_register_project_is_idempotent(tmp_path: Path):
     registry = PostRegistry(root_dir=tmp_path)
-    payload = {
-        "batch_id": "feat_001",
-        "name": "login feature",
-        "from_pool": "task",
-        "to_pool": "thinking",
-        "branches": [
-            {
-                "branch_id": "feat_001_b1",
-                "feature_id": "login_ui",
-                "task_body": "task one",
-                "outbox_path": "pools/thinking/Outbox/feat_001_b1",
-            }
-        ],
-    }
 
-    first = registry.register_batch(**payload)
-    second = registry.register_batch(**payload)
+    first = _register_project(registry)
+    second = _register_project(registry)
 
-    assert first["batch_id"] == second["batch_id"]
-    assert registry.list_batches() == ["feat_001"]
+    assert first["project_key"] == second["project_key"]
+    assert registry.list_projects() == ["proj_001"]
 
 
-def test_add_dependency_persists_record(tmp_path: Path):
+def test_get_project_returns_none_when_missing(tmp_path: Path):
     registry = PostRegistry(root_dir=tmp_path)
+
+    assert registry.get_project("missing") is None
+
+
+def test_update_project_persists_updates(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+    _register_project(registry)
+
+    updated = registry.update_project(
+        "proj_001",
+        {"status": "in_progress", "cursor": 1, "current_pool": "thinking", "next_pool": "construct"},
+    )
+
+    assert updated is not None
+    assert updated["status"] == "in_progress"
+    assert updated["cursor"] == 1
+    assert updated["current_pool"] == "thinking"
+    assert registry.get_project("proj_001")["next_pool"] == "construct"
+
+
+def test_list_projects_returns_all_registered_project_keys(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+    registry.register_project("proj_001", "task", "thinking", ["task", "thinking"])
+    registry.register_project("proj_002", "thinking", "construct", ["thinking", "construct"])
+
+    assert registry.list_projects() == ["proj_001", "proj_002"]
+
+
+def test_add_dependency_uses_project_key_fields(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+
     dependency = registry.add_dependency(
-        source_batch_id="feat_001",
-        target_batch_id="feat_002",
+        source_project_key="proj_001",
+        target_project_key="proj_002",
         rule="after_delivered",
     )
 
+    assert dependency["source_project_key"] == "proj_001"
+    assert dependency["target_project_key"] == "proj_002"
     assert dependency["rule"] == "after_delivered"
-    assert registry.get_dependencies("feat_002")[0]["source_batch_id"] == "feat_001"
+    assert registry.get_dependencies("proj_002") == [dependency]
 
 
-def test_record_transfer_persists_delivery_event(tmp_path: Path):
+def test_record_delivery_persists_delivery_event(tmp_path: Path):
     registry = PostRegistry(root_dir=tmp_path)
-    transfer = registry.record_transfer(
-        batch_id="feat_001",
-        branch_id="feat_001_b1",
+    _register_project(registry)
+
+    delivery = registry.record_delivery(
+        project_key="proj_001",
+        payload_name="task_proj_001.txt",
         from_pool="thinking",
         to_pool="construct",
-        delivery_address="pools/construct/Queue/task_feat_001_b1.txt",
+        delivery_address="pools/construct/Queue/task_proj_001.txt",
         status="delivered",
+        reason="normal routing",
     )
 
-    assert transfer["batch_id"] == "feat_001"
-    assert transfer["status"] == "delivered"
-    transfers = registry.list_transfers(batch_id="feat_001")
-    assert len(transfers) == 1
-    assert transfers[0]["branch_id"] == "feat_001_b1"
+    assert delivery["project_key"] == "proj_001"
+    assert delivery["payload_name"] == "task_proj_001.txt"
+    assert delivery["status"] == "delivered"
+    deliveries = registry.list_deliveries(project_key="proj_001")
+    assert len(deliveries) == 1
+    assert deliveries[0]["delivery_address"] == "pools/construct/Queue/task_proj_001.txt"
+    assert deliveries[0]["reason"] == "normal routing"
 
 
-def test_record_manager_action_persists_audit_log(tmp_path: Path):
+def test_list_deliveries_returns_all_and_can_filter_by_project_key(tmp_path: Path):
     registry = PostRegistry(root_dir=tmp_path)
-    action = registry.record_manager_action(
-        batch_id="feat_001",
-        action_type="hold",
-        detail="User manually held batch due to bug",
+    registry.register_project("proj_001", "task", "thinking", ["task", "thinking"])
+    registry.register_project("proj_002", "thinking", "construct", ["thinking", "construct"])
+
+    first = registry.record_delivery(
+        project_key="proj_001",
+        payload_name="task_proj_001.txt",
+        from_pool="task",
+        to_pool="thinking",
+        delivery_address="pools/thinking/Queue/task_proj_001.txt",
+        status="delivered",
+        reason="initial send",
+    )
+    second = registry.record_delivery(
+        project_key="proj_002",
+        payload_name="task_proj_002.txt",
+        from_pool="thinking",
+        to_pool="construct",
+        delivery_address="pools/construct/Queue/task_proj_002.txt",
+        status="failed",
+        reason="address missing",
     )
 
+    assert registry.list_deliveries() == [first, second]
+    assert registry.list_deliveries(project_key="proj_002") == [second]
+
+
+def test_record_manager_action_uses_project_key(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+
+    action = registry.record_manager_action(
+        project_key="proj_001",
+        action_type="hold",
+        detail="User manually held project due to bug",
+    )
+
+    assert action["project_key"] == "proj_001"
     assert action["action_type"] == "hold"
-    assert action["batch_id"] == "feat_001"
-    actions = registry.list_manager_actions(batch_id="feat_001")
-    assert len(actions) == 1
-    assert actions[0]["detail"] == "User manually held batch due to bug"
+    assert registry.list_manager_actions(project_key="proj_001") == [action]
 
 
+def test_register_project_fallback_route_when_route_omitted(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+
+    result = registry.register_project(
+        project_key="proj_fallback_001",
+        from_pool="thinking",
+        to_pool="construct",
+    )
+
+    assert result["route"] == ["thinking", "construct"]
+    assert result["current_pool"] == "thinking"
+    assert result["next_pool"] == "construct"
+
+
+def test_register_project_rejects_empty_route(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="route cannot be empty"):
+        registry.register_project(
+            project_key="proj_empty_route_001",
+            from_pool="thinking",
+            to_pool="construct",
+            route=[],
+        )
+
+
+def test_update_remaining_route_updates_project_and_records_audit(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+    registry.register_project(
+        project_key="proj_route_001",
+        from_pool="thinking",
+        to_pool="work",
+        route=["thinking", "construct", "gate", "work"],
+    )
+    registry.update_project(
+        "proj_route_001",
+        {"cursor": 1, "current_pool": "construct", "next_pool": "gate"},
+    )
+
+    updated = registry.update_remaining_route(
+        project_key="proj_route_001",
+        remaining_route=["construct", "work"],
+        operator="admin",
+        reason="skip gate",
+    )
+
+    assert updated["route"] == ["thinking", "construct", "work"]
+    assert updated["next_pool"] == "work"
+    assert updated["route_version"] == 2
+    actions = registry.list_manager_actions(project_key="proj_route_001")
+    assert any(a["action_type"] == "route_update" for a in actions)
+
+
+def test_update_remaining_route_rejects_empty_list(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+    _register_project(registry)
+
+    with pytest.raises(ValueError, match="remaining_route cannot be empty"):
+        registry.update_remaining_route(
+            project_key="proj_001",
+            remaining_route=[],
+            operator="admin",
+            reason="test",
+        )
+
+
+def test_update_remaining_route_rejects_wrong_current_pool(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+    _register_project(registry)
+
+    with pytest.raises(ValueError, match="remaining_route must start with current_pool"):
+        registry.update_remaining_route(
+            project_key="proj_001",
+            remaining_route=["wrong_pool", "construct"],
+            operator="admin",
+            reason="test",
+        )
+
+
+def test_update_remaining_route_audit_detail_contains_required_fields(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+    registry.register_project(
+        project_key="proj_audit_001",
+        from_pool="thinking",
+        to_pool="work",
+        route=["thinking", "construct", "work"],
+    )
+    registry.update_project(
+        "proj_audit_001",
+        {"cursor": 1, "current_pool": "construct", "next_pool": "work"},
+    )
+
+    registry.update_remaining_route(
+        project_key="proj_audit_001",
+        remaining_route=["construct", "work"],
+        operator="admin",
+        reason="skip gate for faster delivery",
+    )
+
+    actions = registry.list_manager_actions(project_key="proj_audit_001")
+    route_action = next(a for a in actions if a["action_type"] == "route_update")
+
+    detail = json.loads(route_action["detail"])
+    assert detail["operator"] == "admin"
+    assert detail["reason"] == "skip gate for faster delivery"
+    assert detail["before"]["route"] == ["thinking", "construct", "work"]
+    assert detail["after"]["route"] == ["thinking", "construct", "work"]

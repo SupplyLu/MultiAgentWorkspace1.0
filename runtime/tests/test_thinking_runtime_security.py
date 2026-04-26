@@ -202,7 +202,7 @@ def test_dispatch_rejects_malicious_task_id(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create task with malicious task_id
@@ -256,7 +256,7 @@ def test_dispatch_rejects_malicious_feature_id(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create task with malicious feature_id
@@ -302,7 +302,7 @@ def test_dispatch_clips_invalid_timeout(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create task with extreme timeout
@@ -354,7 +354,7 @@ def test_dispatch_escapes_bat_variables(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create task with valid but special-char-containing IDs

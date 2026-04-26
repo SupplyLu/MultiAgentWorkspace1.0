@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import socket
 import sys
@@ -19,6 +20,7 @@ import time
 from pathlib import Path
 
 from app.runtimes.work_runtime import WorkRuntime
+from app.services.runtime_registry import RuntimeRegistry
 
 
 def find_free_port(start: int = 18800, end: int = 18900) -> int:
@@ -111,10 +113,22 @@ def main() -> None:
     ensure_directory_structure(root_dir)
     logger.info("目录结构已确认")
 
+    # 初始化 RuntimeRegistry
+    registry = RuntimeRegistry(root_dir=root_dir)
+
     # 初始化 WorkRuntime
     runtime = WorkRuntime(root_dir=root_dir, signal_port=signal_port)
     runtime.start()
     logger.info("Signal Server 已启动")
+
+    # 注册到 registry
+    registry.register(
+        pool="work",
+        pid=os.getpid(),
+        port=signal_port,
+        status="running"
+    )
+    logger.info("已注册到 RuntimeRegistry")
 
     # 信号处理（优雅关闭）
     shutdown_flag = False
@@ -126,11 +140,21 @@ def main() -> None:
             logger.info("收到关闭信号，正在停止...")
             runtime.stop()
             logger.info("Signal Server 已停止")
+            # 更新 registry 状态为 stopped
+            registry.register(
+                pool="work",
+                pid=os.getpid(),
+                port=signal_port,
+                status="stopped"
+            )
+            logger.info("已更新 RuntimeRegistry 状态为 stopped")
             sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, signal_handler)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal_handler)
 
     # 主循环：轮询 Queue 目录
     logger.info("开始监控 Queue 目录...")
@@ -143,6 +167,9 @@ def main() -> None:
         # 轮询间隔控制
         if current_time - last_check_time >= poll_interval:
             last_check_time = current_time
+
+            # 更新 registry 心跳
+            registry.heartbeat("work")
 
             # 先检查超时任务
             timed_out = runtime.check_timeouts()

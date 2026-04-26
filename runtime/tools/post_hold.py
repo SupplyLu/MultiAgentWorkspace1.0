@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI tool to hold/resume a batch."""
+"""CLI tool to hold/resume a project."""
 
 import argparse
 import sys
@@ -11,9 +11,9 @@ from tools.post_common import add_root_dir_argument, build_registry_from_args, p
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Hold or resume a POST batch.")
+    parser = argparse.ArgumentParser(description="Hold or resume a POST project.")
     add_root_dir_argument(parser)
-    parser.add_argument("--batch-id", required=True, help="ID of the batch")
+    parser.add_argument("--project-key", required=True, help="Key of the project")
     parser.add_argument(
         "--action",
         required=True,
@@ -26,18 +26,18 @@ def main():
     registry = build_registry_from_args(args)
 
     if args.action == "hold":
-        registry.update_batch(args.batch_id, {"status": "blocked"})
+        registry.update_project(args.project_key, {"status": "blocked"})
         action = registry.record_manager_action(
-            batch_id=args.batch_id,
+            project_key=args.project_key,
             action_type="hold",
-            detail=args.reason or "User manually held batch",
+            detail=args.reason or "User manually held project",
         )
     else:  # resume
-        registry.update_batch(args.batch_id, {"status": "registered"})
+        registry.update_project(args.project_key, {"status": "registered"})
         action = registry.record_manager_action(
-            batch_id=args.batch_id,
+            project_key=args.project_key,
             action_type="resume",
-            detail=args.reason or "User manually resumed batch",
+            detail=args.reason or "User manually resumed project",
         )
 
     print_json(action)

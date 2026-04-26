@@ -1,0 +1,7 @@
+{
+  "default": {
+    "label": "默认",
+    "system_prompt": "You are the default profile.",
+    "temperature": 0.2
+  }
+}

@@ -1,7 +1,0 @@
-TASK_ID: t_live_001
-FEATURE_ID: feature_live_smoke
-TIMEOUT: 300
-POOL: work
-
-请在 workspace 目录创建 smoke_test.txt，内容为：live runtime closed-loop ok
-完成后按 Runtime lifecycle 协议上报。

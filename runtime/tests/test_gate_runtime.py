@@ -211,8 +211,8 @@ Review this construct output.
         time_module.time = original_time
 
 
-def test_dispatch_next_copies_task_and_deploys_bats(tmp_path):
-    """Test that dispatch_next deploys lifecycle bats and launches guard."""
+def test_dispatch_next_uses_gate_specific_bootstrap_file(tmp_path):
+    """Test that Gate dispatch deploys GATE_BOOTSTRAP.txt and launch script reads it explicitly."""
     gate_pool = tmp_path / "pools" / "gate"
     queue_dir = gate_pool / "Queue"
     queue_dir.mkdir(parents=True)
@@ -227,53 +227,43 @@ def test_dispatch_next_copies_task_and_deploys_bats(tmp_path):
     tools_dir.mkdir(parents=True)
     for f in ["Online.bat", "StartReview.bat", "Accepted.bat", "Denied.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
+    gate_tools_dir = tools_dir / "gate"
+    gate_tools_dir.mkdir()
+    (gate_tools_dir / "GATE_BOOTSTRAP.txt").write_text("mock gate bootstrap", encoding="utf-8")
 
     task_file = queue_dir / "task_review_004.txt"
     task_file.write_text("FROM: construct\nTASK_ID: review_004\n\nContent", encoding="utf-8")
 
     runtime = GateRuntime(root_dir=tmp_path, signal_port=19204)
 
-    fake_launch_result = {
-        "launched": True,
-        "dry_run": True,
-        "command": ["cmd"],
-        "cwd": str(slot_dir),
-        "pid": 5678,
-        "job_handle": None,
-    }
-
     import app.shared.launch_manager as lm_module
     original_launch = lm_module.LaunchManager.launch
 
     def mock_launch(self, request, dry_run=True):
-        return fake_launch_result
+        return {
+            "launched": True,
+            "dry_run": dry_run,
+            "command": ["cmd"],
+            "cwd": str(slot_dir),
+            "pid": 5678,
+            "job_handle": None,
+        }
 
     lm_module.LaunchManager.launch = mock_launch
 
     try:
-        result = runtime.dispatch_next(dry_run=True)
+        result = runtime.dispatch_next(dry_run=False)
 
         assert result["dispatched"] is True
-        assert result["slot_id"] == "guard_01"
-        assert result["task_id"] == "review_004"
+        assert (slot_dir / "GATE_BOOTSTRAP.txt").exists()
+        assert not (slot_dir / "BOOTSTRAP.txt").exists()
 
-        # Verify queue is empty (task moved)
-        assert not task_file.exists()
-
-        # Verify worker task file exists
-        assert (slot_dir / "task_review_004.txt").exists()
-
-        # Verify lifecycle bats deployed
-        for f in ["Online.bat", "StartReview.bat", "Accepted.bat", "Denied.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
-            assert (slot_dir / f).exists()
-
-        # Verify launch.bat generated
         launch_bat = slot_dir / "launch_guard_01.bat"
         assert launch_bat.exists()
         launch_content = launch_bat.read_text(encoding="utf-8")
-        assert "set AGENT_ID=guard_01" in launch_content
-        assert "set TASK_ID=review_004" in launch_content
-        assert "set ROLE=guard" in launch_content
-        assert "set POOL=gate" in launch_content
+        assert "GATE_BOOTSTRAP.txt" in launch_content
+        assert "Read and strictly follow all instructions in BOOTSTRAP.txt in the current directory." not in launch_content
     finally:
         lm_module.LaunchManager.launch = original_launch
+
+

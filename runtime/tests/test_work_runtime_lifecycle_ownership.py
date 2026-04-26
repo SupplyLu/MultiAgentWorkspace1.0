@@ -23,7 +23,7 @@ def test_dispatch_next_deploys_lifecycle_bats_to_worker_slot(tmp_path):
     # Lifecycle bats source dir
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for bat_name in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for bat_name in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / bat_name).write_text(f"@echo off\necho {bat_name}", encoding="utf-8")
 
     # Create a task file
@@ -89,7 +89,7 @@ def test_dispatch_next_generated_bat_not_overwritten_by_launch_manager(tmp_path)
     (tmp_path / "pools" / "work" / "Outbox").mkdir(parents=True)
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for bat_name in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for bat_name in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / bat_name).write_text(f"@echo off\necho {bat_name}", encoding="utf-8")
 
     # Create task
@@ -143,7 +143,7 @@ def test_dispatch_next_generated_bat_not_overwritten_by_launch_manager(tmp_path)
         bat_content = bat_file.read_text(encoding="utf-8")
 
         # The fixed bat should NOT contain DIRECT_BOOTSTRAP_PROMPT
-        assert "Read BOOTSTRAP.txt" not in bat_content, (
+        assert "Read WORK_BOOTSTRAP.txt" not in bat_content, (
             "Bat still contains old BOOTSTRAP prompt — LaunchManager overwrote Runtime-generated bat"
         )
 
@@ -391,7 +391,7 @@ def test_dispatch_next_enables_job_object_and_visible_console(tmp_path):
     (tmp_path / "pools" / "work" / "Outbox").mkdir(parents=True)
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for file_name in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for file_name in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / file_name).write_text(f"mock {file_name}", encoding="utf-8")
 
     task_file = queue_dir / "task_008.txt"
@@ -493,7 +493,7 @@ def test_slot_cleanup_on_done_signal(tmp_path):
     
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for bat_name in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for bat_name in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / bat_name).write_text(f"mock {bat_name}", encoding="utf-8")
 
     # Create task
@@ -525,7 +525,7 @@ def test_slot_cleanup_on_done_signal(tmp_path):
         (slot.workspace_dir / "output.txt").write_text("result")
         
         # Verify deployed files exist
-        assert (slot.slot_dir / "BOOTSTRAP.txt").exists()
+        assert (slot.slot_dir / "WORK_BOOTSTRAP.txt").exists()
         assert (slot.slot_dir / "Online.bat").exists()
         assert (slot.slot_dir / "task_cleanup.txt").exists()
         assert (slot.slot_dir / "launch_worker_01.bat").exists()
@@ -539,7 +539,7 @@ def test_slot_cleanup_on_done_signal(tmp_path):
         })
 
         # Verify cleanup
-        assert not (slot.slot_dir / "BOOTSTRAP.txt").exists(), "BOOTSTRAP.txt should be deleted"
+        assert not (slot.slot_dir / "WORK_BOOTSTRAP.txt").exists(), "WORK_BOOTSTRAP.txt should be deleted"
         assert not (slot.slot_dir / "Online.bat").exists(), "Online.bat should be deleted"
         assert not (slot.slot_dir / "task_cleanup.txt").exists(), "Task file should be deleted"
         assert not (slot.slot_dir / "launch_worker_01.bat").exists(), "Launch bat should be deleted"
@@ -581,14 +581,14 @@ def test_slot_cleanup_on_timeout(tmp_path):
 
         # Create dummy deployed files
         (slot.slot_dir / "dummy.bat").write_text("test")
-        (slot.slot_dir / "BOOTSTRAP.txt").write_text("test")
+        (slot.slot_dir / "WORK_BOOTSTRAP.txt").write_text("test")
 
         # Run timeout check
         timed_out = runtime.check_timeouts()
         
         assert len(timed_out) == 1
         assert not (slot.slot_dir / "dummy.bat").exists(), "dummy.bat should be deleted on timeout"
-        assert not (slot.slot_dir / "BOOTSTRAP.txt").exists(), "BOOTSTRAP.txt should be deleted on timeout"
+        assert not (slot.slot_dir / "WORK_BOOTSTRAP.txt").exists(), "WORK_BOOTSTRAP.txt should be deleted on timeout"
         assert slot.workspace_dir.exists(), "Workspace directory must be preserved"
 
     finally:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI tool to modify batch or branch fields."""
+"""CLI tool to modify project route."""
 
 import argparse
 import sys
@@ -11,20 +11,24 @@ from tools.post_common import add_root_dir_argument, build_registry_from_args, p
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Modify a POST batch or branch field.")
+    parser = argparse.ArgumentParser(description="Modify a POST project route.")
     add_root_dir_argument(parser)
-    parser.add_argument("--batch-id", required=True, help="ID of the batch")
-    parser.add_argument("--branch-id", help="ID of the branch to modify")
-    parser.add_argument("--field", required=True, help="Field to update")
-    parser.add_argument("--value", required=True, help="New value")
+    parser.add_argument("--project-key", required=True, help="Key of the project")
+    parser.add_argument("--remaining-route", required=True, help="Comma-separated remaining route for governed mutation")
+    parser.add_argument("--operator", required=True, help="Operator name for route mutation audit")
+    parser.add_argument("--reason", required=True, help="Reason for route mutation audit")
+
     args = parser.parse_args()
 
     registry = build_registry_from_args(args)
 
-    if args.branch_id:
-        result = registry.update_branch(args.batch_id, args.branch_id, {args.field: args.value})
-    else:
-        result = registry.update_batch(args.batch_id, {args.field: args.value})
+    remaining_route = [p.strip() for p in args.remaining_route.split(",")]
+    result = registry.update_remaining_route(
+        project_key=args.project_key,
+        remaining_route=remaining_route,
+        operator=args.operator,
+        reason=args.reason,
+    )
 
     if result is None:
         raise SystemExit(1)

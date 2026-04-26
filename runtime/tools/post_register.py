@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI tool to register a batch and its branches."""
+"""CLI tool to register a project."""
 
 import argparse
 import sys
@@ -8,42 +8,42 @@ from pathlib import Path
 # Add runtime root to path so we can import app
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.services.post_naming import is_valid_project_key
 from tools.post_common import add_root_dir_argument, build_registry_from_args, print_json
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Register a new POST batch and branches.")
+    parser = argparse.ArgumentParser(description="Register a new POST project.")
     add_root_dir_argument(parser)
-    parser.add_argument("--batch-id", required=True, help="ID of the batch")
-    parser.add_argument("--name", required=True, help="Name of the batch")
+    parser.add_argument("--project-key", required=True, help="Key of the project")
     parser.add_argument("--from-pool", required=True, help="Source pool")
     parser.add_argument("--to-pool", required=True, help="Target pool")
-
-    # Simple parsing for one branch in Phase 1 tests.
-    parser.add_argument("--branch-id", required=True, help="ID of the branch")
-    parser.add_argument("--feature-id", required=True, help="Feature ID")
-    parser.add_argument("--task-body", required=True, help="Task body")
-    parser.add_argument("--outbox-path", required=True, help="Outbox path")
+    parser.add_argument("--route", help="Optional comma-separated route, e.g. thinking,construct,work")
 
     args = parser.parse_args()
 
+    # Validate project_key format
+    if not is_valid_project_key(args.project_key):
+        print_json(
+            {
+                "error": (
+                    "Invalid project_key format: "
+                    f"{args.project_key}. Expected format: XXX-(Vision)-(Mode), "
+                    "e.g., SignalOfBridge-v1-Build"
+                )
+            }
+        )
+        sys.exit(1)
+
     registry = build_registry_from_args(args)
 
-    branches = [
-        {
-            "branch_id": args.branch_id,
-            "feature_id": args.feature_id,
-            "task_body": args.task_body,
-            "outbox_path": args.outbox_path,
-        }
-    ]
+    route = [p.strip() for p in args.route.split(",")] if args.route else None
 
-    result = registry.register_batch(
-        batch_id=args.batch_id,
-        name=args.name,
+    result = registry.register_project(
+        project_key=args.project_key,
         from_pool=args.from_pool,
         to_pool=args.to_pool,
-        branches=branches,
+        route=route,
     )
 
     print_json(result)

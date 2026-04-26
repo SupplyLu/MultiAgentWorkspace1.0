@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import logging
+import os
 import signal
 import socket
 import sys
@@ -21,6 +22,7 @@ import time
 from pathlib import Path
 
 from app.runtimes.gate_runtime import GateRuntime
+from app.services.runtime_registry import RuntimeRegistry
 
 
 def find_free_port(start: int = 19200, end: int = 19300) -> int:
@@ -114,9 +116,19 @@ def main() -> None:
     ensure_directory_structure(root_dir)
     logger.info("目录结构已确认")
 
+    registry = RuntimeRegistry(root_dir=root_dir)
+
     runtime = GateRuntime(root_dir=root_dir, signal_port=signal_port)
     runtime.start()
     logger.info("Signal Server 已启动")
+
+    registry.register(
+        pool="gate",
+        pid=os.getpid(),
+        port=signal_port,
+        status="running"
+    )
+    logger.info("已注册到 RuntimeRegistry")
 
     shutdown_flag = False
 
@@ -127,11 +139,20 @@ def main() -> None:
             logger.info("收到关闭信号，正在停止...")
             runtime.stop()
             logger.info("Signal Server 已停止")
+            registry.register(
+                pool="gate",
+                pid=os.getpid(),
+                port=signal_port,
+                status="stopped"
+            )
+            logger.info("已更新 RuntimeRegistry 状态为 stopped")
             sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, signal_handler)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal_handler)
 
     logger.info("开始监控 Queue 目录...")
     poll_interval = args.poll_interval
@@ -141,6 +162,8 @@ def main() -> None:
         current_time = time.time()
         if current_time - last_check_time >= poll_interval:
             last_check_time = current_time
+
+            registry.heartbeat("gate")
 
             timed_out = runtime.check_timeouts()
             for item in timed_out:

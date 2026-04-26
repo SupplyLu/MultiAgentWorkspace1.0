@@ -507,7 +507,7 @@ def test_list_queue_tasks_converts_folder_to_reference_txt(tmp_path):
 
     # The folder should be gone, replaced by a reference txt
     assert not batch_folder.exists(), "Batch folder should have been moved"
-    assert any("task_batch_pid_simulink_001.txt" in name for name in task_names), \
+    assert any("task_pid_simulink_001.txt" in name for name in task_names), \
         f"Expected reference txt, got: {task_names}"
 
     # The field directory should exist
@@ -612,10 +612,10 @@ def test_cleanup_batch_field_on_done(tmp_path):
     # Simulate Done signal for a batch task
     slot = runtime.get_slot("constructor_01")
     slot.busy = True
-    slot.assigned_task_id = "batch_batch_cleanup_test"
+    slot.assigned_task_id = "batch_cleanup_test"
 
     # Cleanup the field
-    runtime._cleanup_batch_field(slot, "batch_batch_cleanup_test")
+    runtime._cleanup_batch_field(slot, "batch_cleanup_test")
 
     # Field should be gone
     assert not field_dir.exists(), "Field should be cleaned up after Done"
@@ -647,7 +647,7 @@ def test_mixed_txt_and_folder_queue(tmp_path):
 
     # Should have both: original txt + converted batch reference
     assert "single_task.txt" in task_names, "Original txt should remain"
-    assert any("task_batch_mixed_batch.txt" in name for name in task_names), \
+    assert any("task_mixed_batch.txt" in name for name in task_names), \
         "Batch should be converted to reference txt"
 
 
@@ -671,7 +671,141 @@ def test_build_batch_task_txt_format(tmp_path):
 
     # Verify key fields
     assert "FROM: thinking_pool" in content
-    assert "TASK_ID: batch_format_test" in content
+    assert "TASK_ID: format_test" in content
     assert "INPUT_MODE: batch_dir" in content
     assert "BATCH_FIELD:" in content
     assert "batch_dir" in content
+
+
+def test_dispatch_next_uses_construct_specific_bootstrap_and_copies_batch_into_workspace(tmp_path):
+    construct_pool = tmp_path / "pools" / "construct"
+    queue_dir = construct_pool / "Queue"
+    outbox_dir = construct_pool / "Outbox"
+    queue_dir.mkdir(parents=True)
+    outbox_dir.mkdir(parents=True)
+
+    slot_dir = construct_pool / "constructor_01"
+    slot_dir.mkdir(parents=True)
+    workspace_dir = slot_dir / "workspace"
+    workspace_dir.mkdir(parents=True)
+
+    tools_dir = tmp_path / "runtime" / "tools"
+    tools_dir.mkdir(parents=True)
+    for f in ["Online.bat", "StartArchitecting.bat", "StartFinalizing.bat", "Done.bat", "signal_bridge.py", "CONSTRUCT_BOOTSTRAP.txt"]:
+        (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
+
+    batch_dir = queue_dir / "batch_workspace_copy"
+    batch_dir.mkdir()
+    (batch_dir / "summary.txt").write_text("BATCH_ID: batch_workspace_copy\n", encoding="utf-8")
+    (batch_dir / "task_alpha.txt").write_text("alpha\n", encoding="utf-8")
+
+    runtime = ConstructRuntime(root_dir=tmp_path, signal_port=19030)
+
+    fake_launch_result = {
+        "launched": True,
+        "dry_run": True,
+        "command": ["cmd"],
+        "cwd": str(slot_dir),
+        "pid": 1234,
+        "job_handle": None,
+    }
+
+    import app.shared.launch_manager as lm_module
+    original_launch = lm_module.LaunchManager.launch
+
+    def mock_launch(self, request, dry_run=True):
+        return fake_launch_result
+
+    lm_module.LaunchManager.launch = mock_launch
+
+    try:
+        result = runtime.dispatch_next(dry_run=True)
+
+        assert result["dispatched"] is True
+        assert (slot_dir / "CONSTRUCT_BOOTSTRAP.txt").exists()
+        assert not (slot_dir / "BOOTSTRAP.txt").exists()
+
+        launch_bat = slot_dir / "launch_constructor_01.bat"
+        assert launch_bat.exists()
+        bat_content = launch_bat.read_text(encoding="utf-8")
+        assert "CONSTRUCT_BOOTSTRAP.txt" in bat_content
+        assert "BOOTSTRAP.txt" not in bat_content.replace("CONSTRUCT_BOOTSTRAP.txt", "")
+
+        workspace_batch_dir = workspace_dir / "batch_workspace_copy"
+        assert workspace_batch_dir.exists()
+        assert (workspace_batch_dir / "summary.txt").exists()
+        assert (workspace_batch_dir / "task_alpha.txt").exists()
+    finally:
+        lm_module.LaunchManager.launch = original_launch
+
+
+def test_handle_signal_done_moves_workspace_to_outbox_and_clears_workspace(tmp_path):
+    construct_pool = tmp_path / "pools" / "construct"
+    (construct_pool / "Queue").mkdir(parents=True)
+    (construct_pool / "Outbox").mkdir(parents=True)
+    slot_dir = construct_pool / "constructor_01"
+    slot_dir.mkdir(parents=True)
+    workspace_dir = slot_dir / "workspace"
+    workspace_dir.mkdir(parents=True)
+
+    workspace_batch_dir = workspace_dir / "batch_done_move"
+    workspace_batch_dir.mkdir()
+    (workspace_batch_dir / "summary.txt").write_text("done summary", encoding="utf-8")
+    (workspace_batch_dir / "task_alpha.txt").write_text("done task", encoding="utf-8")
+
+    runtime = ConstructRuntime(root_dir=tmp_path, signal_port=19031)
+    slot = runtime.get_slot("constructor_01")
+    slot.busy = True
+    slot.assigned_task_id = "batch_done_move"
+    slot.launch_result = {"job_handle": "fake_handle"}
+
+    cleanup_called = False
+
+    def mock_cleanup(launch_res):
+        nonlocal cleanup_called
+        cleanup_called = True
+        return {"killed": True}
+
+    runtime._launch_manager.cleanup_launch = mock_cleanup
+
+    runtime.handle_signal({
+        "agent_id": "constructor_01",
+        "task_id": "batch_done_move",
+        "signal": "done",
+        "is_terminal": True,
+    })
+
+    assert cleanup_called is True
+    assert slot.busy is False
+    assert not any(workspace_dir.iterdir())
+
+    outbox_batch_dir = construct_pool / "Outbox" / "batch_done_move" / "batch_done_move"
+    assert outbox_batch_dir.exists()
+    assert (outbox_batch_dir / "summary.txt").read_text(encoding="utf-8") == "done summary"
+    assert (outbox_batch_dir / "task_alpha.txt").read_text(encoding="utf-8") == "done task"
+
+
+def test_dispatch_next_does_not_reuse_finalizing_slot(tmp_path):
+    construct_pool = tmp_path / "pools" / "construct"
+    queue_dir = construct_pool / "Queue"
+    queue_dir.mkdir(parents=True)
+
+    slot_dir = construct_pool / "constructor_01"
+    slot_dir.mkdir(parents=True)
+    (slot_dir / "workspace").mkdir(parents=True)
+
+    task_file = queue_dir / "task_finalizing.txt"
+    task_file.write_text(
+        "FROM: runtime\nTO: constructor_01\nTASK_ID: c_finalizing\nFEATURE_ID: feature_finalizing\n---\nTask.\n",
+        encoding="utf-8",
+    )
+
+    runtime = ConstructRuntime(root_dir=tmp_path, signal_port=19032)
+    slot = runtime.get_slot("constructor_01")
+    slot.finalizing = True
+
+    result = runtime.dispatch_next(dry_run=True)
+
+    assert result["dispatched"] is False
+    assert result["error"] == "No idle slot available"
+    assert task_file.exists()

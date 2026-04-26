@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI tool to render current manifest view for a batch."""
+"""CLI tool to render current manifest view for a project."""
 
 import argparse
 import sys
@@ -11,27 +11,29 @@ from tools.post_common import add_root_dir_argument, build_registry_from_args, p
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Render manifest view for a POST batch.")
+    parser = argparse.ArgumentParser(description="Render manifest view for a POST project.")
     add_root_dir_argument(parser)
-    parser.add_argument("--batch-id", required=True, help="ID of the batch")
+    parser.add_argument("--project-key", required=True, help="Key of the project")
     args = parser.parse_args()
 
     registry = build_registry_from_args(args)
 
-    batch = registry.get_batch(args.batch_id)
-    if batch is None:
+    project = registry.get_project(args.project_key)
+    if project is None:
         raise SystemExit(1)
 
-    branches = registry.get_branches(args.batch_id)
-    dependencies = registry.get_dependencies(args.batch_id)
+    dependencies = registry.get_dependencies(args.project_key)
 
     manifest = {
-        "batch_id": batch["batch_id"],
-        "name": batch["name"],
-        "from_pool": batch["from_pool"],
-        "to_pool": batch["to_pool"],
-        "status": batch["status"],
-        "branches": branches,
+        "project_key": project["project_key"],
+        "from_pool": project["from_pool"],
+        "to_pool": project["to_pool"],
+        "status": project["status"],
+        "route": project.get("route", [project["from_pool"], project["to_pool"]]),
+        "cursor": project.get("cursor", 0),
+        "current_pool": project.get("current_pool"),
+        "next_pool": project.get("next_pool"),
+        "route_version": project.get("route_version", 1),
         "dependencies": dependencies,
     }
 

@@ -4,288 +4,311 @@ import sys
 from pathlib import Path
 
 
-def test_post_register_cli_creates_batch(tmp_path: Path):
+RUNTIME_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _run_cli(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, cwd=RUNTIME_ROOT, capture_output=True, text=True)
+
+
+def _register_project(
+    tmp_path: Path,
+    project_key: str,
+    *,
+    from_pool: str = "task",
+    to_pool: str = "thinking",
+    route: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     command = [
         sys.executable,
         "tools/post_register.py",
         "--root-dir",
         str(tmp_path),
-        "--batch-id",
-        "feat_001",
-        "--name",
-        "login feature",
+        "--project-key",
+        project_key,
         "--from-pool",
-        "task",
+        from_pool,
         "--to-pool",
-        "thinking",
-        "--branch-id",
-        "feat_001_b1",
-        "--feature-id",
-        "login_ui",
-        "--task-body",
-        "task one",
-        "--outbox-path",
-        "pools/thinking/Outbox/feat_001_b1",
+        to_pool,
     ]
-    completed = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
+    if route is not None:
+        command.extend(["--route", route])
+    return _run_cli(command)
+
+
+
+def test_post_register_cli_creates_batch(tmp_path: Path):
+    completed = _register_project(tmp_path, "SignalOfBridge-v1-Build")
 
     assert completed.returncode == 0
     payload = json.loads(completed.stdout)
-    assert payload["batch_id"] == "feat_001"
+    assert payload["project_key"] == "SignalOfBridge-v1-Build"
+    assert payload["status"] == "registered"
+    assert payload["from_pool"] == "task"
+    assert payload["to_pool"] == "thinking"
+
 
 
 def test_post_hold_cli_blocks_batch(tmp_path: Path):
-    # First register a batch
-    register_cmd = [
-        sys.executable,
-        "tools/post_register.py",
-        "--root-dir",
-        str(tmp_path),
-        "--batch-id",
-        "feat_002",
-        "--name",
-        "test feature",
-        "--from-pool",
-        "task",
-        "--to-pool",
-        "thinking",
-        "--branch-id",
-        "feat_002_b1",
-        "--feature-id",
-        "test_ui",
-        "--task-body",
-        "task body",
-        "--outbox-path",
-        "pools/thinking/Outbox/feat_002_b1",
-    ]
-    subprocess.run(register_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True)
+    register_completed = _register_project(tmp_path, "SignalOfBridge-v1-Think")
+    assert register_completed.returncode == 0
 
-    # Then hold it
     hold_cmd = [
         sys.executable,
         "tools/post_hold.py",
         "--root-dir",
         str(tmp_path),
-        "--batch-id",
-        "feat_002",
+        "--project-key",
+        "SignalOfBridge-v1-Think",
         "--action",
         "hold",
     ]
-    completed = subprocess.run(hold_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
+    completed = _run_cli(hold_cmd)
 
     assert completed.returncode == 0
     payload = json.loads(completed.stdout)
+    assert payload["project_key"] == "SignalOfBridge-v1-Think"
     assert payload["action_type"] == "hold"
 
 
-def test_post_status_cli_returns_batch_info(tmp_path: Path):
-    # First register a batch
-    register_cmd = [
-        sys.executable,
-        "tools/post_register.py",
-        "--root-dir",
-        str(tmp_path),
-        "--batch-id",
-        "feat_003",
-        "--name",
-        "status test",
-        "--from-pool",
-        "task",
-        "--to-pool",
-        "thinking",
-        "--branch-id",
-        "feat_003_b1",
-        "--feature-id",
-        "status_ui",
-        "--task-body",
-        "task body",
-        "--outbox-path",
-        "pools/thinking/Outbox/feat_003_b1",
-    ]
-    subprocess.run(register_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True)
 
-    # Then query status
+def test_post_status_cli_returns_batch_info(tmp_path: Path):
+    register_completed = _register_project(tmp_path, "SignalOfBridge-v1-Route")
+    assert register_completed.returncode == 0
+
     status_cmd = [
         sys.executable,
         "tools/post_status.py",
         "--root-dir",
         str(tmp_path),
-        "--batch-id",
-        "feat_003",
+        "--project-key",
+        "SignalOfBridge-v1-Route",
     ]
-    completed = subprocess.run(status_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
+    completed = _run_cli(status_cmd)
 
     assert completed.returncode == 0
     payload = json.loads(completed.stdout)
-    assert payload["batch_id"] == "feat_003"
+    assert payload["project_key"] == "SignalOfBridge-v1-Route"
     assert payload["status"] == "registered"
 
 
-def test_post_modify_cli_updates_branch_target(tmp_path: Path):
-    # Register a batch first
-    register_cmd = [
-        sys.executable,
-        "tools/post_register.py",
-        "--root-dir", str(tmp_path),
-        "--batch-id", "feat_004",
-        "--name", "modify test",
-        "--from-pool", "task",
-        "--to-pool", "thinking",
-        "--branch-id", "feat_004_b1",
-        "--feature-id", "modify_ui",
-        "--task-body", "original body",
-        "--outbox-path", "pools/thinking/Outbox/feat_004_b1",
-    ]
-    subprocess.run(register_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True)
-
-    # Modify the branch
-    modify_cmd = [
-        sys.executable,
-        "tools/post_modify.py",
-        "--root-dir", str(tmp_path),
-        "--batch-id", "feat_004",
-        "--branch-id", "feat_004_b1",
-        "--field", "task_body",
-        "--value", "updated body",
-    ]
-    completed = subprocess.run(modify_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
-
-    assert completed.returncode == 0
-    payload = json.loads(completed.stdout)
-    assert payload["branch_id"] == "feat_004_b1"
-    assert payload["task_body"] == "updated body"
-
-
-def test_post_delete_cli_marks_branch_skipped(tmp_path: Path):
-    # Register a batch first
-    register_cmd = [
-        sys.executable,
-        "tools/post_register.py",
-        "--root-dir", str(tmp_path),
-        "--batch-id", "feat_005",
-        "--name", "delete test",
-        "--from-pool", "task",
-        "--to-pool", "thinking",
-        "--branch-id", "feat_005_b1",
-        "--feature-id", "delete_ui",
-        "--task-body", "task body",
-        "--outbox-path", "pools/thinking/Outbox/feat_005_b1",
-    ]
-    subprocess.run(register_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True)
-
-    # Delete (skip) the branch
-    delete_cmd = [
-        sys.executable,
-        "tools/post_delete.py",
-        "--root-dir", str(tmp_path),
-        "--batch-id", "feat_005",
-        "--branch-id", "feat_005_b1",
-    ]
-    completed = subprocess.run(delete_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
-
-    assert completed.returncode == 0
-    payload = json.loads(completed.stdout)
-    assert payload["branch_id"] == "feat_005_b1"
-    assert payload["status"] == "skipped"
-
 
 def test_post_manifest_cli_returns_batch_snapshot(tmp_path: Path):
-    # Register a batch first
-    register_cmd = [
-        sys.executable,
-        "tools/post_register.py",
-        "--root-dir", str(tmp_path),
-        "--batch-id", "feat_006",
-        "--name", "manifest test",
-        "--from-pool", "task",
-        "--to-pool", "thinking",
-        "--branch-id", "feat_006_b1",
-        "--feature-id", "manifest_ui",
-        "--task-body", "task body",
-        "--outbox-path", "pools/thinking/Outbox/feat_006_b1",
-    ]
-    subprocess.run(register_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True)
+    register_completed = _register_project(tmp_path, "SignalOfBridge-v1-Manifest")
+    assert register_completed.returncode == 0
 
-    # Get manifest
     manifest_cmd = [
         sys.executable,
         "tools/post_manifest.py",
-        "--root-dir", str(tmp_path),
-        "--batch-id", "feat_006",
+        "--root-dir",
+        str(tmp_path),
+        "--project-key",
+        "SignalOfBridge-v1-Manifest",
     ]
-    completed = subprocess.run(manifest_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
+    completed = _run_cli(manifest_cmd)
 
     assert completed.returncode == 0
     payload = json.loads(completed.stdout)
-    assert payload["batch_id"] == "feat_006"
-    assert payload["name"] == "manifest test"
-    assert len(payload["branches"]) == 1
-    assert payload["branches"][0]["branch_id"] == "feat_006_b1"
+    assert payload["project_key"] == "SignalOfBridge-v1-Manifest"
+    assert payload["from_pool"] == "task"
+    assert payload["to_pool"] == "thinking"
+    assert payload["status"] == "registered"
+    assert payload["dependencies"] == []
+
 
 
 def test_post_dep_cli_creates_dependency(tmp_path: Path):
-    # Register two batches
-    for batch_id in ["feat_007", "feat_008"]:
-        register_cmd = [
-            sys.executable,
-            "tools/post_register.py",
-            "--root-dir", str(tmp_path),
-            "--batch-id", batch_id,
-            "--name", f"{batch_id} test",
-            "--from-pool", "task",
-            "--to-pool", "thinking",
-            "--branch-id", f"{batch_id}_b1",
-            "--feature-id", f"{batch_id}_ui",
-            "--task-body", "task body",
-            "--outbox-path", f"pools/thinking/Outbox/{batch_id}_b1",
-        ]
-        subprocess.run(register_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True)
+    first = _register_project(tmp_path, "SignalOfBridge-v1-Source")
+    second = _register_project(tmp_path, "SignalOfBridge-v1-Target")
+    assert first.returncode == 0
+    assert second.returncode == 0
 
-    # Add dependency
     dep_cmd = [
         sys.executable,
         "tools/post_dep.py",
-        "--root-dir", str(tmp_path),
-        "--after", "feat_007",
-        "--before", "feat_008",
-        "--rule", "after_delivered",
+        "--root-dir",
+        str(tmp_path),
+        "--source-project-key",
+        "SignalOfBridge-v1-Source",
+        "--target-project-key",
+        "SignalOfBridge-v1-Target",
+        "--rule",
+        "after_delivered",
     ]
-    completed = subprocess.run(dep_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
+    completed = _run_cli(dep_cmd)
 
     assert completed.returncode == 0
     payload = json.loads(completed.stdout)
-    assert payload["source_batch_id"] == "feat_007"
-    assert payload["target_batch_id"] == "feat_008"
+    assert payload["source_project_key"] == "SignalOfBridge-v1-Source"
+    assert payload["target_project_key"] == "SignalOfBridge-v1-Target"
     assert payload["rule"] == "after_delivered"
 
-def test_post_replay_cli_resets_delivery_status(tmp_path: Path):
-    # Register a batch first
-    register_cmd = [
+
+
+def test_post_register_accepts_route_argument(tmp_path: Path):
+    command = [
         sys.executable,
         "tools/post_register.py",
-        "--root-dir", str(tmp_path),
-        "--batch-id", "feat_replay_001",
-        "--name", "replay test",
-        "--from-pool", "task",
-        "--to-pool", "thinking",
-        "--branch-id", "feat_replay_001_b1",
-        "--feature-id", "replay_ui",
-        "--task-body", "task body",
-        "--outbox-path", "pools/thinking/Outbox/feat_replay_001_b1",
+        "--root-dir",
+        str(tmp_path),
+        "--project-key",
+        "SignalOfBridge-v1-RoutePlan",
+        "--from-pool",
+        "thinking",
+        "--to-pool",
+        "work",
+        "--route",
+        "thinking,construct,work",
     ]
-    subprocess.run(register_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True)
+    completed = _run_cli(command)
 
-    # Replay the batch
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    assert payload["project_key"] == "SignalOfBridge-v1-RoutePlan"
+    assert payload["route"] == ["thinking", "construct", "work"]
+    assert payload["cursor"] == 0
+    assert payload["current_pool"] == "thinking"
+    assert payload["next_pool"] == "construct"
+
+
+
+def test_post_modify_cli_updates_remaining_route_with_operator_and_reason(tmp_path: Path):
+    register_completed = _register_project(
+        tmp_path,
+        "SignalOfBridge-v1-Mutate",
+        route="task,thinking,construct",
+    )
+    assert register_completed.returncode == 0
+
+    modify_cmd = [
+        sys.executable,
+        "tools/post_modify.py",
+        "--root-dir",
+        str(tmp_path),
+        "--project-key",
+        "SignalOfBridge-v1-Mutate",
+        "--remaining-route",
+        "task,construct",
+        "--operator",
+        "admin",
+        "--reason",
+        "skip thinking",
+    ]
+    completed = _run_cli(modify_cmd)
+
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    assert payload["project_key"] == "SignalOfBridge-v1-Mutate"
+    assert payload["route"] == ["task", "construct"]
+    assert payload["route_version"] == 2
+
+
+
+def test_post_replay_cli_resets_delivery_status(tmp_path: Path):
+    register_completed = _register_project(tmp_path, "SignalOfBridge-v1-Replay")
+    assert register_completed.returncode == 0
+
     replay_cmd = [
         sys.executable,
         "tools/post_replay.py",
-        "--root-dir", str(tmp_path),
-        "--batch-id", "feat_replay_001",
+        "--root-dir",
+        str(tmp_path),
+        "--project-key",
+        "SignalOfBridge-v1-Replay",
     ]
-    completed = subprocess.run(replay_cmd, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
+    completed = _run_cli(replay_cmd)
 
     assert completed.returncode == 0
     payload = json.loads(completed.stdout)
-    assert payload["batch_id"] == "feat_replay_001"
-    assert "feat_replay_001_b1" in payload["replayed_branches"]
+    assert payload["project_key"] == "SignalOfBridge-v1-Replay"
     assert payload["action"]["action_type"] == "replay"
+
+
+
+def test_post_delete_cli_skips_project(tmp_path: Path):
+    register_completed = _register_project(tmp_path, "SignalOfBridge-v1-Delete")
+    assert register_completed.returncode == 0
+
+    delete_cmd = [
+        sys.executable,
+        "tools/post_delete.py",
+        "--root-dir",
+        str(tmp_path),
+        "--project-key",
+        "SignalOfBridge-v1-Delete",
+        "--reason",
+        "operator skipped project",
+    ]
+    completed = _run_cli(delete_cmd)
+
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    assert payload["project_key"] == "SignalOfBridge-v1-Delete"
+    assert payload["status"] == "skipped"
+    assert payload["skipped_reason"] == "operator skipped project"
+
+
+
+def test_post_register_rejects_invalid_project_key_format(tmp_path: Path):
+    command = [
+        sys.executable,
+        "tools/post_register.py",
+        "--root-dir",
+        str(tmp_path),
+        "--project-key",
+        "invalid_key_no_vision",
+        "--from-pool",
+        "task",
+        "--to-pool",
+        "thinking",
+    ]
+    completed = _run_cli(command)
+
+    assert completed.returncode != 0
+    payload = json.loads(completed.stdout)
+    assert "error" in payload
+    assert "Invalid project_key format" in payload["error"]
+
+
+
+def test_post_register_rejects_project_key_with_atomic_suffix(tmp_path: Path):
+    command = [
+        sys.executable,
+        "tools/post_register.py",
+        "--root-dir",
+        str(tmp_path),
+        "--project-key",
+        "SignalOfBridge-v1-Build-001",
+        "--from-pool",
+        "task",
+        "--to-pool",
+        "thinking",
+    ]
+    completed = _run_cli(command)
+
+    assert completed.returncode != 0
+    payload = json.loads(completed.stdout)
+    assert "error" in payload
+    assert "Invalid project_key format" in payload["error"]
+
+
+
+def test_post_register_accepts_valid_project_key_format(tmp_path: Path):
+    command = [
+        sys.executable,
+        "tools/post_register.py",
+        "--root-dir",
+        str(tmp_path),
+        "--project-key",
+        "SignalOfBridge-v1-Build",
+        "--from-pool",
+        "task",
+        "--to-pool",
+        "thinking",
+    ]
+    completed = _run_cli(command)
+
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    assert payload["project_key"] == "SignalOfBridge-v1-Build"
+    assert payload["status"] == "registered"

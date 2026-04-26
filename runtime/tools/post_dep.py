@@ -13,16 +13,16 @@ from tools.post_common import add_root_dir_argument, build_registry_from_args, p
 def main():
     parser = argparse.ArgumentParser(description="Add a POST dependency record.")
     add_root_dir_argument(parser)
-    parser.add_argument("--after", required=True, help="Source batch that must happen first")
-    parser.add_argument("--before", required=True, help="Target batch that depends on the source")
+    parser.add_argument("--source-project-key", required=True, help="Source project that must happen first")
+    parser.add_argument("--target-project-key", required=True, help="Target project that depends on the source")
     parser.add_argument("--rule", default="after_delivered", help="Dependency rule")
     args = parser.parse_args()
 
     registry = build_registry_from_args(args)
 
     result = registry.add_dependency(
-        source_batch_id=args.after,
-        target_batch_id=args.before,
+        source_project_key=args.source_project_key,
+        target_project_key=args.target_project_key,
         rule=args.rule,
     )
 

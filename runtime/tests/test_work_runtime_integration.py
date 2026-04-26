@@ -60,7 +60,7 @@ def test_work_runtime_launch_bat_includes_lifecycle_commands():
 
         tools_dir = Path(tmpdir) / "runtime" / "tools"
         tools_dir.mkdir(parents=True, exist_ok=True)
-        for file_name in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+        for file_name in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
             (tools_dir / file_name).write_text(f"mock {file_name}", encoding="utf-8")
 
         # Create task file
@@ -90,7 +90,7 @@ def test_work_runtime_launch_bat_includes_lifecycle_commands():
             assert "worker_01" in bat_content
             assert "t_001" in bat_content
             assert "work" in bat_content
-            assert "BOOTSTRAP.txt" in bat_content
+            assert "WORK_BOOTSTRAP.txt" in bat_content
 
         finally:
             lm_module.LaunchManager.launch = original_launch

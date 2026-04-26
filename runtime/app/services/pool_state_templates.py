@@ -121,6 +121,30 @@ class PoolStateTemplateRegistry:
         )
         self._templates["construct"] = construct_template
 
+        package_template = PoolStateTemplate(
+            pool_id="package",
+            initial_state="state_0",
+            terminal_states={"state_6_done", "state_6_rejected", "state_timeout"},
+            transitions=[
+                StateTransition("state_0", "state_1", ["online"], "idle -> online"),
+                StateTransition("state_1", "state_2", ["start_cut"], "online -> cutting"),
+                StateTransition("state_2", "state_3", ["cut_passed"], "cutting -> testing"),
+                StateTransition("state_3", "state_4", ["test_passed"], "testing -> releasing"),
+                StateTransition("state_4", "state_5", ["release_passed"], "releasing -> completing"),
+                StateTransition("state_5", "state_6_done", ["done"], "completing -> done"),
+                StateTransition("state_2", "state_6_rejected", ["denied"], "cutting -> denied"),
+                StateTransition("state_3", "state_6_rejected", ["denied"], "testing -> denied"),
+                StateTransition("state_4", "state_6_rejected", ["denied"], "releasing -> denied"),
+                StateTransition("state_5", "state_6_rejected", ["denied"], "completing -> denied"),
+                StateTransition("state_1", "state_timeout", ["timeout"], "online -> timeout"),
+                StateTransition("state_2", "state_timeout", ["timeout"], "cutting -> timeout"),
+                StateTransition("state_3", "state_timeout", ["timeout"], "testing -> timeout"),
+                StateTransition("state_4", "state_timeout", ["timeout"], "releasing -> timeout"),
+                StateTransition("state_5", "state_timeout", ["timeout"], "completing -> timeout"),
+            ],
+        )
+        self._templates["package"] = package_template
+
     def get_template(self, pool_id: str) -> PoolStateTemplate | None:
         return self._templates.get(pool_id)
 

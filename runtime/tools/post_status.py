@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI tool to query batch status."""
+"""CLI tool to query project status."""
 
 import argparse
 import sys
@@ -11,18 +11,18 @@ from tools.post_common import add_root_dir_argument, build_registry_from_args, p
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Query POST batch status.")
+    parser = argparse.ArgumentParser(description="Query POST project status.")
     add_root_dir_argument(parser)
-    parser.add_argument("--batch-id", required=True, help="ID of the batch")
+    parser.add_argument("--project-key", required=True, help="Key of the project")
     args = parser.parse_args()
 
     registry = build_registry_from_args(args)
-    batch = registry.get_batch(args.batch_id)
+    project = registry.get_project(args.project_key)
 
-    if batch is None:
+    if project is None:
         raise SystemExit(1)
 
-    print_json(batch)
+    print_json(project)
 
 
 if __name__ == "__main__":

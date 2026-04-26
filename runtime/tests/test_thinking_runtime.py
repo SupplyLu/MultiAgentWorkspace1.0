@@ -54,7 +54,7 @@ def test_get_next_idle_slot_uses_lowest_available(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     runtime = ThinkingRuntime(root_dir=tmp_path, signal_port=19002)
@@ -118,7 +118,7 @@ def test_dispatch_next_copies_task_to_slot_and_marks_busy(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create a task file
@@ -323,7 +323,7 @@ def test_deploy_lifecycle_bats_includes_thinking_specific_bats(tmp_path):
     """Test that _deploy_lifecycle_bats copies Thinking Pool specific bats."""
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     thinking_pool = tmp_path / "pools" / "thinking"
@@ -345,7 +345,7 @@ def test_deploy_lifecycle_bats_includes_thinking_specific_bats(tmp_path):
     assert (slot1_dir / "StartSummarizing.bat").exists()
     assert (slot1_dir / "Done.bat").exists()
     assert (slot1_dir / "signal_bridge.py").exists()
-    assert (slot1_dir / "BOOTSTRAP.txt").exists()
+    assert (slot1_dir / "THINKING_BOOTSTRAP.txt").exists()
 
 
 def test_dispatch_next_clears_workspace_before_task(tmp_path):
@@ -361,7 +361,7 @@ def test_dispatch_next_clears_workspace_before_task(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create stale artifact in workspace
@@ -405,7 +405,7 @@ def test_dispatch_next_rolls_back_when_deploy_fails(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     task_file = queue_dir / "task_rollback.txt"
@@ -450,7 +450,7 @@ def test_dispatch_next_rolls_back_when_launch_fails(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True)
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     task_file = queue_dir / "task_launch_fail.txt"

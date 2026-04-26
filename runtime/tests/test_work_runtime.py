@@ -16,7 +16,7 @@ def test_get_next_idle_slot_uses_lowest_available(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -56,7 +56,7 @@ def test_list_queue_tasks_ignores_hidden_files(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -89,7 +89,7 @@ def test_dispatch_next_copies_task_to_worker_slot_and_marks_busy(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -173,7 +173,7 @@ def test_dispatch_next_handles_invalid_timeout_safely(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     task_file = queue_dir / "task_invalid_timeout.txt"
@@ -217,7 +217,7 @@ def test_dispatch_next_supports_legacy_header_key_shape(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -277,7 +277,7 @@ def test_dispatch_next_returns_no_idle_slot_when_all_busy(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -315,7 +315,7 @@ def test_handle_signal_releases_slot_on_done(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -354,7 +354,7 @@ def test_handle_signal_releases_slot_on_failed(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -393,7 +393,7 @@ def test_handle_signal_releases_slot_on_blocked(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -430,7 +430,7 @@ def test_start_and_stop_signal_server(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -459,7 +459,7 @@ def test_dispatch_next_with_no_tasks_returns_nothing(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -483,7 +483,7 @@ def test_get_slot_returns_correct_slot(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -521,7 +521,7 @@ def test_deploy_lifecycle_bats_includes_signal_bridge(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -551,7 +551,7 @@ def test_deploy_lifecycle_bats_includes_bootstrap_txt(tmp_path):
 
     # Write specific content to BOOTSTRAP.txt to verify exact match
     bootstrap_content = "Special BOOTSTRAP content with call Online.bat explicit instructions"
-    (tools_dir / "BOOTSTRAP.txt").write_text(bootstrap_content, encoding="utf-8")
+    (tools_dir / "WORK_BOOTSTRAP.txt").write_text(bootstrap_content, encoding="utf-8")
 
     (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
     worker1_dir = tmp_path / "pools" / "work" / "worker_01"
@@ -567,7 +567,7 @@ def test_deploy_lifecycle_bats_includes_bootstrap_txt(tmp_path):
 
     runtime._deploy_lifecycle_bats(slot)
 
-    deployed_bootstrap = worker1_dir / "BOOTSTRAP.txt"
+    deployed_bootstrap = worker1_dir / "WORK_BOOTSTRAP.txt"
     assert deployed_bootstrap.exists(), "BOOTSTRAP.txt must be deployed to worker slot"
     assert deployed_bootstrap.read_text(encoding="utf-8") == bootstrap_content, "Deployed BOOTSTRAP.txt must match source exactly"
 
@@ -612,7 +612,7 @@ def test_launch_bat_does_not_call_online_bat(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -641,7 +641,7 @@ def test_launch_bat_does_not_call_online_bat(tmp_path):
             "launch bat should NOT call Online.bat; Online is worker's own responsibility"
         )
         # But BOOTSTRAP.txt prompt should still be there
-        assert "BOOTSTRAP.txt" in bat_content
+        assert "WORK_BOOTSTRAP.txt" in bat_content
     finally:
         lm_module.LaunchManager.launch = original_launch
 
@@ -656,7 +656,7 @@ def test_handle_signal_ignores_unknown_agent(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
 
@@ -689,7 +689,7 @@ def test_dispatch_next_clears_stale_task_files_from_slot_before_copying(tmp_path
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Inject a STALE task file into the slot
@@ -736,7 +736,7 @@ def test_dispatch_next_rolls_back_when_deploy_lifecycle_bats_fails(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     task_file = queue_dir / "task_rollback_001.txt"
@@ -782,7 +782,7 @@ def test_dispatch_next_rolls_back_when_launch_fails(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     task_file = queue_dir / "task_launch_fail_001.txt"
@@ -830,7 +830,7 @@ def test_workspace_isolation_prevents_artifact_leak_between_tasks(tmp_path):
 
     tools_dir = tmp_path / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     runtime = WorkRuntime(root_dir=tmp_path, signal_port=18786)

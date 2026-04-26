@@ -41,7 +41,7 @@ def test_thinking_runtime_closed_loop_integration(tmp_path):
     real_tools_dir = Path("C:/Users/lenovo/Desktop/MultiAgentWorkspace1.0/runtime/tools")
     shutil.copy(real_tools_dir / "signal_bridge.py", tools_dir / "signal_bridge.py")
 
-    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create task
