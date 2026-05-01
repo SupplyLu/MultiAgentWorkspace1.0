@@ -2,6 +2,12 @@
 .worktrees/
 worktrees/
 
+# Runtime local state
+.runtime_locks/
+runtime/state/*.lock
+runtime/state/pool_timeout_config.json
+runtime/state/dashboard_column_order.json
+
 # Python
 __pycache__/
 *.py[cod]

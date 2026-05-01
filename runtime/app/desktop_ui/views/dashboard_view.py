@@ -8,15 +8,20 @@ import re
 from app.desktop_ui.data.pool_monitor_service import PoolMonitorService
 from app.desktop_ui.data.runtime_client import RuntimeClient
 from app.desktop_ui.services.runtime_command_bridge import RuntimeCommandBridge
+from app.services.timeout_defaults_store import TimeoutDefaultsStore
 
 try:
     from PySide6.QtCore import QTimer, QThread, Signal as QtSignal
     from PySide6.QtWidgets import (
+        QDialog,
+        QDialogButtonBox,
+        QFormLayout,
         QFrame,
         QHBoxLayout,
         QLabel,
         QPushButton,
         QScrollArea,
+        QSpinBox,
         QVBoxLayout,
         QWidget,
     )
@@ -40,6 +45,26 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for environments with
         def __init__(self, *args, **kwargs):
             pass
 
+    class QDialog(QWidget):
+        Accepted = 1
+
+        def __init__(self, parent=None):
+            super().__init__()
+            self._parent = parent
+            self._window_title = ""
+
+        def setWindowTitle(self, title: str):
+            self._window_title = title
+
+        def exec(self):
+            return 0
+
+        def accept(self):
+            return None
+
+        def reject(self):
+            return None
+
     class QLabel:
         def __init__(self, text: str = ""):
             self._text = text
@@ -53,6 +78,9 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for environments with
         def setStyleSheet(self, style: str):
             self._style = style
 
+        def setWordWrap(self, value: bool):
+            self._word_wrap = value
+
     class _Signal:
         def connect(self, callback):
             self._callback = callback
@@ -61,12 +89,52 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for environments with
         def __init__(self, text: str = ""):
             self._text = text
             self.clicked = _Signal()
+            self._visible = True
 
         def text(self):
             return self._text
 
+        def setText(self, text: str):
+            self._text = text
+
         def setStyleSheet(self, style: str):
             self._style = style
+
+        def setFixedWidth(self, width: int):
+            self._fixed_width = width
+
+        def setVisible(self, visible: bool):
+            self._visible = visible
+
+    class QSpinBox:
+        def __init__(self):
+            self._minimum = 0
+            self._maximum = 0
+            self._single_step = 1
+            self._value = 0
+
+        def setMinimum(self, value: int):
+            self._minimum = value
+
+        def setMaximum(self, value: int):
+            self._maximum = value
+
+        def setSingleStep(self, value: int):
+            self._single_step = value
+
+        def setValue(self, value: int):
+            self._value = value
+
+        def value(self) -> int:
+            return self._value
+
+    class QDialogButtonBox:
+        Ok = 1
+        Cancel = 2
+
+        def __init__(self, buttons=None):
+            self.accepted = _Signal()
+            self.rejected = _Signal()
 
     class QVBoxLayout:
         def __init__(self, parent=None):
@@ -99,9 +167,22 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for environments with
     class QHBoxLayout(QVBoxLayout):
         pass
 
+    class QFormLayout(QVBoxLayout):
+        def addRow(self, label, widget=None):
+            if widget is None:
+                self.children.append(label)
+            else:
+                self.children.append((label, widget))
+
     class QFrame(QWidget):
         def setStyleSheet(self, style: str):
             self._style = style
+
+        def setFixedWidth(self, width: int):
+            self._fixed_width = width
+
+        def setFixedHeight(self, height: int):
+            self._fixed_height = height
 
     class QScrollArea(QWidget):
         def setWidgetResizable(self, value: bool):
@@ -154,6 +235,43 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for environments with
 
 
 DEFAULT_POOLS = ["work", "thinking", "construct", "gate", "post", "package"]
+EXECUTION_POOLS = {"work", "thinking", "construct", "gate", "package"}
+
+
+class TimeoutSettingsDialog(QDialog):
+    def __init__(self, pool_name: str, current_timeout_seconds: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"{pool_name.upper()} Timeout")
+        self._spin_box = QSpinBox()
+        if hasattr(self._spin_box, "setMinimum"):
+            self._spin_box.setMinimum(60)
+        if hasattr(self._spin_box, "setMaximum"):
+            self._spin_box.setMaximum(86400)
+        if hasattr(self._spin_box, "setSingleStep"):
+            self._spin_box.setSingleStep(60)
+        if hasattr(self._spin_box, "setValue"):
+            self._spin_box.setValue(current_timeout_seconds)
+
+        layout = QFormLayout(self)
+        layout.addRow("Timeout (seconds):", self._spin_box)
+        hint = QLabel("仅对后续新任务生效")
+        if hasattr(hint, "setStyleSheet"):
+            hint.setStyleSheet("color: #666666; font-size: 12px;")
+        if hasattr(hint, "setWordWrap"):
+            hint.setWordWrap(True)
+        layout.addRow(hint)
+
+        self._button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        if hasattr(self._button_box, "accepted"):
+            self._button_box.accepted.connect(self.accept)
+        if hasattr(self._button_box, "rejected"):
+            self._button_box.rejected.connect(self.reject)
+        layout.addRow(self._button_box)
+
+    def selected_timeout_seconds(self) -> int:
+        if hasattr(self._spin_box, "value"):
+            return self._spin_box.value()
+        return 60
 
 
 class _DashboardOrderStore:
@@ -287,7 +405,7 @@ class WorkstationWidget(QFrame):
 
 
 class RuntimeColumnWidget(QFrame):
-    def __init__(self, pool_name: str, runtime: dict, slots: list[dict], runtime_client: RuntimeClient, command_bridge: RuntimeCommandBridge, owner_view=None):
+    def __init__(self, pool_name: str, runtime: dict, slots: list[dict], runtime_client: RuntimeClient, command_bridge: RuntimeCommandBridge, owner_view=None, can_move_left: bool = True, can_move_right: bool = True):
         super().__init__()
         self._pool_name = pool_name
         self._runtime = runtime
@@ -299,8 +417,9 @@ class RuntimeColumnWidget(QFrame):
         status_text, color_name = RuntimeStatusInferer.infer(runtime)
         self._title_label = QLabel(pool_name.upper())
         self._status_label = QLabel(status_text)
-        self._move_left_button = QPushButton("Left")
-        self._move_right_button = QPushButton("Right")
+        self._move_left_button = QPushButton("←")
+        self._move_right_button = QPushButton("→")
+        self._timeout_button = QPushButton("Timeout")
 
         layout = QVBoxLayout(self)
         if hasattr(layout, "setContentsMargins"):
@@ -310,15 +429,24 @@ class RuntimeColumnWidget(QFrame):
 
         header_row = QHBoxLayout()
         if hasattr(header_row, "addWidget"):
-            header_row.addWidget(self._move_left_button)
-            header_row.addWidget(self._move_right_button)
             header_row.addWidget(self._title_label)
         if hasattr(header_row, "addStretch"):
             header_row.addStretch()
+        if hasattr(header_row, "addWidget"):
+            header_row.addWidget(self._timeout_button)
         if hasattr(layout, "addLayout"):
             layout.addLayout(header_row)
         if hasattr(layout, "addWidget"):
             layout.addWidget(self._status_label)
+
+        # 显示当前默认超时
+        default_timeout = runtime.get("default_timeout_seconds")
+        if default_timeout is not None and pool_name in EXECUTION_POOLS:
+            timeout_display = QLabel(f"默认超时: {default_timeout}s")
+            if hasattr(timeout_display, "setStyleSheet"):
+                timeout_display.setStyleSheet("font-size: 11px; color: #555555;")
+            if hasattr(layout, "addWidget"):
+                layout.addWidget(timeout_display)
 
         button_row = QHBoxLayout()
         self._start_button = QPushButton("Online")
@@ -344,6 +472,13 @@ class RuntimeColumnWidget(QFrame):
         if hasattr(layout, "addStretch"):
             layout.addStretch()
 
+        move_row = QHBoxLayout()
+        if hasattr(move_row, "addWidget"):
+            move_row.addWidget(self._move_left_button)
+            move_row.addWidget(self._move_right_button)
+        if hasattr(layout, "addLayout"):
+            layout.addLayout(move_row)
+
         if hasattr(self._start_button, "clicked"):
             self._start_button.clicked.connect(self._start)
         if hasattr(self._stop_button, "clicked"):
@@ -352,13 +487,23 @@ class RuntimeColumnWidget(QFrame):
             self._move_left_button.clicked.connect(self._move_left)
         if hasattr(self._move_right_button, "clicked"):
             self._move_right_button.clicked.connect(self._move_right)
+        if hasattr(self._timeout_button, "clicked"):
+            self._timeout_button.clicked.connect(self._open_timeout_settings)
 
         if hasattr(self._title_label, "setStyleSheet"):
             self._title_label.setStyleSheet("font-size: 13px; font-weight: 700;")
         if hasattr(self._move_left_button, "setFixedWidth"):
-            self._move_left_button.setFixedWidth(52)
+            self._move_left_button.setFixedWidth(36)
         if hasattr(self._move_right_button, "setFixedWidth"):
-            self._move_right_button.setFixedWidth(52)
+            self._move_right_button.setFixedWidth(36)
+        if hasattr(self._timeout_button, "setFixedWidth"):
+            self._timeout_button.setFixedWidth(70)
+        if hasattr(self._move_left_button, "setVisible"):
+            self._move_left_button.setVisible(can_move_left)
+        if hasattr(self._move_right_button, "setVisible"):
+            self._move_right_button.setVisible(can_move_right)
+        if pool_name not in EXECUTION_POOLS and hasattr(self._timeout_button, "setStyleSheet"):
+            self._timeout_button.setStyleSheet("color: #999999;")
         if hasattr(self, "setStyleSheet"):
             self.setStyleSheet(self._build_style(color_name))
         if hasattr(self, "setFixedWidth"):
@@ -413,6 +558,28 @@ class RuntimeColumnWidget(QFrame):
         port = self._runtime.get("port")
         if port:
             self._runtime_client.send_control(self._pool_name, "resume", port)
+
+    def _open_timeout_settings(self):
+        pool_name = self._pool_name
+        if pool_name not in EXECUTION_POOLS:
+            return
+        root_dir = self._owner_view._monitor_service._root_dir if self._owner_view else None
+        if root_dir is None:
+            return
+        store = TimeoutDefaultsStore(root_dir=root_dir)
+        current = store.get(pool_name)
+        dialog = TimeoutSettingsDialog(pool_name=pool_name, current_timeout_seconds=current)
+        if hasattr(dialog, "exec"):
+            result = dialog.exec()
+        else:
+            result = 0
+        accepted_code = getattr(QDialog, "Accepted", 1)
+        if result == accepted_code:
+            new_timeout = dialog.selected_timeout_seconds()
+            store.set(pool_name, new_timeout)
+            if self._owner_view:
+                self._owner_view._refresh_data()
+            print(f"[TimeoutSettings] {pool_name} timeout updated to {new_timeout}s")
 
     @staticmethod
     def _build_style(color_name: str) -> str:
@@ -524,7 +691,9 @@ class DashboardView(QWidget):
     def _render_pool_statuses(self, pool_statuses):
         self._last_pool_statuses = list(pool_statuses)
         self._clear_content()
-        for pool_data in self._normalize_pool_order(pool_statuses):
+        ordered_pool_statuses = self._normalize_pool_order(pool_statuses)
+        total = len(ordered_pool_statuses)
+        for index, pool_data in enumerate(ordered_pool_statuses):
             pool_name = pool_data["pool"]
             runtime = pool_data.get("runtime", {})
             slots = pool_data.get("slots", [])
@@ -535,6 +704,8 @@ class DashboardView(QWidget):
                 runtime_client=self._runtime_client,
                 command_bridge=self._command_bridge,
                 owner_view=self,
+                can_move_left=index > 0,
+                can_move_right=index < total - 1,
             )
             self._pool_column_widgets.append(column)
             if hasattr(self._content_layout, "addWidget"):

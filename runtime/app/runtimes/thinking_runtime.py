@@ -20,6 +20,7 @@ import re
 
 from app.services.signal_server import RuntimeSignalServer
 from app.services.slot_governance_store import SlotGovernanceStore
+from app.services.timeout_defaults_store import TimeoutDefaultsStore
 from app.shared.launch_manager import LaunchManager, LaunchRequest
 from app.shared.shutdown_manager import ShutdownManager
 from app.shared.file_queue import parse_task_file, parse_task_header, split_task_file_content
@@ -101,7 +102,7 @@ class ThinkingRuntime:
         signal_port: int = 18765,
     ):
         self._root_dir = Path(root_dir)
-        self._signal_port = signal_port
+        self._timeout_defaults = TimeoutDefaultsStore(root_dir=self._root_dir)
 
         # Core paths - pools/thinking/
         self._thinking_pool_dir = self._root_dir / "pools" / "thinking"
@@ -241,7 +242,7 @@ class ThinkingRuntime:
         slot.assigned_task_id = ""
         slot.launch_result = None
         slot.assigned_at_epoch = 0.0
-        slot.timeout_seconds = 300
+        slot.timeout_seconds = self._timeout_defaults.get("thinking")
 
     def dispatch_next(self, dry_run: bool = True) -> dict[str, Any]:
         """Dispatch the next task to an idle thinking slot."""
@@ -299,11 +300,14 @@ class ThinkingRuntime:
 
             task_id = _validate_task_id(project_key)
 
-            raw_timeout = headers.get("TIMEOUT", "1800")  # Default 30min for thinking tasks
-            try:
-                parsed_timeout = int(raw_timeout)
-            except (TypeError, ValueError) as e:
-                raise ValueError(f"Invalid TIMEOUT value: {raw_timeout}") from e
+            raw_timeout = headers.get("TIMEOUT", None)
+            if raw_timeout is None:
+                parsed_timeout = self._timeout_defaults.get("thinking")
+            else:
+                try:
+                    parsed_timeout = int(raw_timeout)
+                except (TypeError, ValueError) as e:
+                    raise ValueError(f"Invalid TIMEOUT value: {raw_timeout}") from e
             timeout_seconds = _validate_timeout(parsed_timeout)
         except Exception:
             if slot is not None and task_file is not None:
@@ -477,7 +481,7 @@ exit /b %ERRORLEVEL%
         slot.assigned_task_id = ""
         slot.launch_result = None
         slot.assigned_at_epoch = 0.0
-        slot.timeout_seconds = 300
+        slot.timeout_seconds = self._timeout_defaults.get("thinking")
         slot.last_known_state = "state_0"
 
         return result

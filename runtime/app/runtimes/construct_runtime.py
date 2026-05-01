@@ -26,6 +26,7 @@ import fnmatch
 
 from app.services.signal_server import RuntimeSignalServer
 from app.services.slot_governance_store import SlotGovernanceStore
+from app.services.timeout_defaults_store import TimeoutDefaultsStore
 from app.shared.launch_manager import LaunchManager, LaunchRequest
 from app.shared.shutdown_manager import ShutdownManager
 from app.shared.file_queue import parse_task_file
@@ -95,7 +96,7 @@ class ConstructRuntime:
         signal_port: int = 19020,
     ):
         self._root_dir = Path(root_dir)
-        self._signal_port = signal_port
+        self._timeout_defaults = TimeoutDefaultsStore(root_dir=self._root_dir)
 
         # Core paths - pools/construct/
         self._construct_pool_dir = self._root_dir / "pools" / "construct"
@@ -298,14 +299,16 @@ Analyze and generate strong-constrained work tasks for Work Pool:
         (slot.slot_dir / "CONSTRUCT_BOOTSTRAP.txt").write_bytes(bootstrap_src.read_bytes())
 
     def _parse_timeout_seconds(self, headers: dict[str, Any]) -> int:
-        """Parse TIMEOUT header safely with 30-minute default."""
-        raw_timeout = headers.get("TIMEOUT", 1800)
+        """Parse TIMEOUT header safely with configurable default."""
+        raw_timeout = headers.get("TIMEOUT", None)
+        if raw_timeout is None:
+            return self._timeout_defaults.get("construct")
         try:
             timeout_seconds = int(raw_timeout)
         except (TypeError, ValueError):
-            return 1800
+            return self._timeout_defaults.get("construct")
         if timeout_seconds <= 0:
-            return 1800
+            return self._timeout_defaults.get("construct")
         return timeout_seconds
 
     def get_next_idle_slot(self) -> ConstructorSlot | None:
@@ -369,7 +372,7 @@ Analyze and generate strong-constrained work tasks for Work Pool:
         slot.assigned_task_id = ""
         slot.launch_result = None
         slot.assigned_at_epoch = 0.0
-        slot.timeout_seconds = 1200
+        slot.timeout_seconds = self._timeout_defaults.get("construct")
 
     def dispatch_next(self, dry_run: bool = True) -> dict[str, Any]:
         """Dispatch the next task to an idle constructor slot."""
@@ -626,7 +629,7 @@ exit /b %ERRORLEVEL%
         slot.assigned_task_id = ""
         slot.launch_result = None
         slot.assigned_at_epoch = 0.0
-        slot.timeout_seconds = 1200
+        slot.timeout_seconds = self._timeout_defaults.get("construct")
         slot.last_known_state = "state_0"
 
         return result

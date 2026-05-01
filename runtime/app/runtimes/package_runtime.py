@@ -36,6 +36,7 @@ import time
 
 from app.services.signal_server import RuntimeSignalServer
 from app.services.slot_governance_store import SlotGovernanceStore
+from app.services.timeout_defaults_store import TimeoutDefaultsStore
 from app.shared.file_queue import parse_task_file
 from app.shared.launch_manager import LaunchManager, LaunchRequest
 
@@ -113,7 +114,7 @@ class PackageRuntime:
         signal_port: int = 19300,
     ):
         self._root_dir = Path(root_dir)
-        self._signal_port = signal_port
+        self._timeout_defaults = TimeoutDefaultsStore(root_dir=self._root_dir)
 
         # 池目录
         self._package_pool_dir = self._root_dir / "pools" / "package"
@@ -217,13 +218,15 @@ class PackageRuntime:
 
     def _parse_timeout_seconds(self, headers: dict[str, Any]) -> int:
         """安全解析超时时间"""
-        raw_timeout = headers.get("TIMEOUT", 1800)
+        raw_timeout = headers.get("TIMEOUT", None)
+        if raw_timeout is None:
+            return self._timeout_defaults.get("package")
         try:
             timeout_seconds = int(raw_timeout)
         except (TypeError, ValueError):
-            return 1800
+            return self._timeout_defaults.get("package")
         if timeout_seconds <= 0:
-            return 1800
+            return self._timeout_defaults.get("package")
         return timeout_seconds
 
     def _create_task_context(self, task_data: dict, task_file: Path) -> PackageTask:
@@ -268,12 +271,15 @@ class PackageRuntime:
         if slot is None:
             return {"dispatched": False, "error": f"No idle {slot_type} slot available"}
 
+        slot_timeout = self._timeout_defaults.get("package")
+
         # 标记槽位忙碌
         with self._lock:
             slot.busy = True
             slot.assigned_task_id = task.task_id
             slot.assigned_project_name = task.project_name
             slot.assigned_at_epoch = time.time()
+            slot.timeout_seconds = slot_timeout
 
         # 复制任务文件到槽位
         task_file_name = f"{task.task_id}.txt"
@@ -386,6 +392,7 @@ exit /b %ERRORLEVEL%
 
         # 创建任务上下文
         task = self._create_task_context(task_data, task_file)
+        timeout_seconds = self._parse_timeout_seconds(task_data.get("headers", {}))
 
         # 先尝试派发到第一阶段：Cut
         result = self._deploy_to_stage(task, "cut", dry_run=dry_run)

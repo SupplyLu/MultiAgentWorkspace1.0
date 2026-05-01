@@ -8,6 +8,7 @@ from typing import Any
 from app.desktop_ui.data.post_progress_reader import PostProgressReader
 from app.desktop_ui.data.registry_reader import RegistryReader
 from app.desktop_ui.data.runtime_client import RuntimeClient
+from app.services.timeout_defaults_store import TimeoutDefaultsStore
 
 
 class PoolMonitorService:
@@ -26,6 +27,7 @@ class PoolMonitorService:
         self._registry_reader = RegistryReader(root_dir=self._root_dir)
         self._runtime_client = RuntimeClient(root_dir=self._root_dir)
         self._post_progress_reader = PostProgressReader(self._root_dir / "transfers")
+        self._timeout_defaults = TimeoutDefaultsStore(root_dir=self._root_dir)
 
     def _scan_slot_directories(self, pool_name: str) -> list[dict[str, Any]]:
         prefixes = self.SLOT_PREFIXES.get(pool_name)
@@ -64,6 +66,9 @@ class PoolMonitorService:
             port = pool_entry.get("port") or 0
             status_value = pool_entry.get("status", "stopped")
             runtime_online = status_value == "running"
+            default_timeout_seconds = None
+            if pool_name in self.SLOT_PREFIXES:
+                default_timeout_seconds = self._timeout_defaults.get(pool_name)
 
             if pool_name == "post":
                 progress = self._post_progress_reader.get_progress()
@@ -83,6 +88,7 @@ class PoolMonitorService:
                             "slot_total": 0,
                             "slot_enabled": 0,
                             "slot_busy": 0,
+                            "default_timeout_seconds": default_timeout_seconds,
                             "active_registrations": progress.get("active_registrations", 0),
                             "waiting_payload_registrations": progress.get("waiting_payload_registrations", 0),
                             "blocked_registrations": progress.get("blocked_registrations", 0),
@@ -135,6 +141,7 @@ class PoolMonitorService:
                         "slot_total": len(slots),
                         "slot_enabled": enabled_count,
                         "slot_busy": busy_count,
+                        "default_timeout_seconds": default_timeout_seconds,
                     },
                     "slots": slots,
                 }

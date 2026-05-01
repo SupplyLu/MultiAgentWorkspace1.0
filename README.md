@@ -55,6 +55,16 @@ Task Pool → Thinking Pool → Construct Pool → Gate Pool → Work Pool → P
 - **Packaging Pool**：打包与交付
 - **POST System**：跨池编排与投递层，处理项目路由、依赖、退回、原子工单
 
+### v1.2 更新内容（基于 v1.1）
+
+#### 执行池默认超时可配置
+
+- **新增持久化超时配置**：五个执行池（Work / Thinking / Construct / Gate / Package）的默认超时统一持久化到 `runtime/state/pool_timeout_config.json`
+- **桌面 UI 可直接调整**：Dashboard 为每个执行池新增 `Timeout` 按钮，可直接修改后续新任务使用的默认超时
+- **运行态展示更直观**：Runtime 卡片显示当前池默认超时，便于观察不同池的治理参数
+- **任务头优先级保留**：若任务头显式声明 `TIMEOUT`，仍优先覆盖池默认值
+- **本地状态排除发布**：超时配置文件与 Dashboard 列顺序文件作为本地运行态数据默认忽略，不进入发布仓库
+
 ### v1.1 更新内容（相比 v1.0）
 
 #### POST 全面落地

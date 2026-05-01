@@ -13,6 +13,7 @@ import time
 
 from app.services.signal_server import RuntimeSignalServer
 from app.services.slot_governance_store import SlotGovernanceStore
+from app.services.timeout_defaults_store import TimeoutDefaultsStore
 from app.shared.file_queue import parse_task_file
 from app.shared.launch_manager import LaunchManager, LaunchRequest
 
@@ -50,7 +51,7 @@ class GateRuntime:
         signal_port: int = 19200,
     ):
         self._root_dir = Path(root_dir)
-        self._signal_port = signal_port
+        self._timeout_defaults = TimeoutDefaultsStore(root_dir=self._root_dir)
 
         self._gate_pool_dir = self._root_dir / "pools" / "gate"
         self._queue_dir = self._gate_pool_dir / "Queue"
@@ -220,13 +221,15 @@ Instructions:
         (slot.slot_dir / "GATE_BOOTSTRAP.txt").write_bytes(gate_bootstrap.read_bytes())
 
     def _parse_timeout_seconds(self, headers: dict[str, Any]) -> int:
-        raw_timeout = headers.get("TIMEOUT", 600)
+        raw_timeout = headers.get("TIMEOUT", None)
+        if raw_timeout is None:
+            return self._timeout_defaults.get("gate")
         try:
             timeout_seconds = int(raw_timeout)
         except (TypeError, ValueError):
-            return 600
+            return self._timeout_defaults.get("gate")
         if timeout_seconds <= 0:
-            return 600
+            return self._timeout_defaults.get("gate")
         return timeout_seconds
 
     def dispatch_next(self, dry_run: bool = True) -> dict[str, Any]:
@@ -432,7 +435,7 @@ exit /b %ERRORLEVEL%
             slot.assigned_task_id = ""
             slot.launch_result = None
             slot.assigned_at_epoch = 0.0
-            slot.timeout_seconds = 600
+            slot.timeout_seconds = self._timeout_defaults.get("gate")
             slot.last_known_state = "state_0"
 
         return result
@@ -611,7 +614,7 @@ exit /b %ERRORLEVEL%
                 slot.assigned_task_id = ""
                 slot.launch_result = None
                 slot.assigned_at_epoch = 0.0
-                slot.timeout_seconds = 600
+                slot.timeout_seconds = self._timeout_defaults.get("gate")
                 slot.last_known_state = "state_0"
 
                 timed_out.append({

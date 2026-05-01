@@ -11,6 +11,7 @@ import threading
 
 from app.services.signal_server import RuntimeSignalServer
 from app.services.slot_governance_store import SlotGovernanceStore
+from app.services.timeout_defaults_store import TimeoutDefaultsStore
 from app.shared.launch_manager import LaunchManager, LaunchRequest
 from app.shared.shutdown_manager import ShutdownManager
 from app.shared.file_queue import parse_task_file
@@ -70,7 +71,7 @@ class WorkRuntime:
         signal_port: int = 18765,
     ):
         self._root_dir = Path(root_dir)
-        self._signal_port = signal_port
+        self._timeout_defaults = TimeoutDefaultsStore(root_dir=self._root_dir)
 
         # Core paths
         self._work_pool_dir = self._root_dir / "pools" / "work"
@@ -211,17 +212,24 @@ class WorkRuntime:
         slot.assigned_task_id = ""
         slot.launch_result = None
         slot.assigned_at_epoch = 0.0
-        slot.timeout_seconds = 300
+        slot.timeout_seconds = self._timeout_defaults.get("work")
         slot.project_mode = PROJECT_MODE_LEGACY
         slot.project_root = None
 
     def _parse_timeout_seconds(self, headers: dict[str, Any]) -> int:
-        """Parse TIMEOUT header safely with 300-second default and boundary limits."""
-        raw_timeout = headers.get("TIMEOUT", 300)
-        try:
-            timeout_seconds = int(raw_timeout)
-        except (TypeError, ValueError):
-            return 300
+        """Parse TIMEOUT header safely with configurable default and boundary limits."""
+        raw_timeout = headers.get("TIMEOUT", None)
+        if raw_timeout is None:
+            default = self._timeout_defaults.get("work")
+            try:
+                timeout_seconds = int(default)
+            except (TypeError, ValueError):
+                timeout_seconds = 300
+        else:
+            try:
+                timeout_seconds = int(raw_timeout)
+            except (TypeError, ValueError):
+                return self._timeout_defaults.get("work")
 
         # Enforce boundaries (min 60s, max 24h)
         if timeout_seconds < 60:
@@ -525,7 +533,7 @@ class WorkRuntime:
             slot.assigned_task_id = ""
             slot.launch_result = None
             slot.assigned_at_epoch = 0.0
-            slot.timeout_seconds = 300
+            slot.timeout_seconds = self._timeout_defaults.get("work")
             slot.project_mode = PROJECT_MODE_LEGACY
             slot.project_root = None
 
