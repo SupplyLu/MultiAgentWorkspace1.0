@@ -75,10 +75,10 @@ def test_auto_detects_only_directories_with_workspace(tmp_path):
     assert "worker_01" in runtime._slots
 
 
-def _make_task(queue_dir: Path, task_name: str, task_id: str) -> Path:
+def _make_task(queue_dir: Path, task_name: str, project_key: str) -> Path:
     task_file = queue_dir / task_name
     task_file.write_text(
-        f"TASK_ID: {task_id}\nTIMEOUT: 60\n\ntest task\n",
+        f"PROJECT_KEY: {project_key}\nTIMEOUT: 60\n\ntest task\n",
         encoding="utf-8",
     )
     return task_file
@@ -94,25 +94,25 @@ def test_dispatch_uses_auto_detected_slots(tmp_path):
     runtime = WorkRuntime(root_dir=tmp_path, signal_port=18774)
 
     # First dispatch
-    _make_task(queue_dir, "task_auto_001.txt", "t_auto_001")
+    _make_task(queue_dir, "task_auto_001.txt", "SignalBridge-v1-Auto001")
     r1 = runtime.dispatch_next(dry_run=True)
     assert r1["dispatched"] is True
     assert r1["slot_id"] == "worker_01"
 
     # Second dispatch
-    _make_task(queue_dir, "task_auto_002.txt", "t_auto_002")
+    _make_task(queue_dir, "task_auto_002.txt", "SignalBridge-v2-Auto002")
     r2 = runtime.dispatch_next(dry_run=True)
     assert r2["dispatched"] is True
     assert r2["slot_id"] == "worker_02"
 
     # Third dispatch
-    _make_task(queue_dir, "task_auto_003.txt", "t_auto_003")
+    _make_task(queue_dir, "task_auto_003.txt", "SignalBridge-v3-Auto003")
     r3 = runtime.dispatch_next(dry_run=True)
     assert r3["dispatched"] is True
     assert r3["slot_id"] == "worker_03"
 
     # All 3 busy, fourth dispatch should fail
-    _make_task(queue_dir, "task_auto_004.txt", "t_auto_004")
+    _make_task(queue_dir, "task_auto_004.txt", "SignalBridge-v4-Auto004")
     r4 = runtime.dispatch_next(dry_run=True)
     assert r4["dispatched"] is False
     assert "No idle slot" in r4.get("error", "")

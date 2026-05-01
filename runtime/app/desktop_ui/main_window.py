@@ -29,16 +29,19 @@ from app.desktop_ui.views.prompt_profile_view import PromptProfileView
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, prompt_profiles_path: Path | str | None = None):
+    def __init__(self, prompt_profiles_path: Path | str | None = None, root_dir: Path | str | None = None):
         super().__init__()
         self.setWindowTitle("MultiAgent Workspace Desktop UI")
         self.resize(1200, 800)
+
+        if root_dir is None:
+            root_dir = Path(__file__).resolve().parents[3]
 
         if prompt_profiles_path is None:
             prompt_profiles_path = Path(__file__).resolve().parents[2] / "config" / "prompt_profiles.json"
 
         tabs = QTabWidget()
-        tabs.addTab(DashboardView(), "态势")
+        tabs.addTab(DashboardView(root_dir=root_dir), "态势")
         tabs.addTab(ControlView(), "控制")
         tabs.addTab(ProjectsView(), "项目")
         tabs.addTab(PromptProfileView(prompt_profiles_path), "提示词")

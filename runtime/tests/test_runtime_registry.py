@@ -99,3 +99,54 @@ def test_runtime_registry_persists_to_disk(tmp_path):
     assert info is not None
     assert info["pid"] == 999
     assert info["port"] == 18800
+
+
+def test_runtime_registry_preserves_other_pools_across_instances(tmp_path):
+    """Test that separate RuntimeRegistry instances do not overwrite each other's pools."""
+    registry1 = RuntimeRegistry(root_dir=tmp_path)
+    registry2 = RuntimeRegistry(root_dir=tmp_path)
+
+    registry1.register(pool="post", pid=101, port=19400, status="running")
+    registry2.register(pool="package", pid=202, port=19300, status="running")
+    registry1.heartbeat("post")
+
+    registry3 = RuntimeRegistry(root_dir=tmp_path)
+    all_pools = {item["pool"] for item in registry3.list_all()}
+
+    assert all_pools == {"post", "package"}
+import pytest
+from filelock import FileLock
+
+def test_runtime_registry_lock_timeout(tmp_path):
+    """Test that RuntimeRegistry raises TimeoutError if lock cannot be acquired."""
+    registry = RuntimeRegistry(root_dir=tmp_path)
+
+    # Pre-acquire the lock to simulate another process holding it
+    lock_file = tmp_path / "runtime_registry.json.lock"
+    external_lock = FileLock(lock_file)
+
+    with external_lock:
+        # Should raise TimeoutError because lock is held and registry sets timeout=5.0
+        # For testing we want it to fail faster, but we'll patch the timeout
+        import unittest.mock as mock
+        with mock.patch("app.shared.json_store.FileLock") as mock_filelock:
+            # Create a mock lock that immediately raises Timeout
+            from filelock import Timeout
+
+            # Setup the mock lock instance
+            mock_lock_instance = mock.MagicMock()
+            mock_lock_instance.__enter__.side_effect = Timeout(lock_file)
+            mock_filelock.return_value = mock_lock_instance
+
+            with pytest.raises(TimeoutError, match="Timeout acquiring lock for runtime registry"):
+                registry.register(pool="work", pid=1, port=18800, status="running")
+
+
+def test_runtime_registry_handles_non_dict_payloads(tmp_path):
+    registry_file = tmp_path / "runtime_registry.json"
+    registry_file.write_text("[1, 2, 3]", encoding="utf-8")
+
+    registry = RuntimeRegistry(root_dir=tmp_path)
+
+    assert registry.get("work") is None
+    assert registry.list_all() == []

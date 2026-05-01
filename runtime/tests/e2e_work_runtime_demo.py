@@ -75,8 +75,7 @@ def main():
             d.mkdir(parents=True, exist_ok=True)
 
         # 2. 创建任务文件（真实格式）
-        task_content = """TASK_ID: t_e2e_001
-FEATURE_ID: feature_e2e_test
+        task_content = """PROJECT_KEY: SignalBridge-v1-E2ETest
 POOL: work
 
 请在 workspace 目录创建一个 README.txt 文件，内容为 "E2E test passed"。
@@ -113,7 +112,7 @@ POOL: work
 
             assert result["dispatched"] is True, "派发失败"
             assert result["slot_id"] == "worker_01", f"期望 worker_01, 得到 {result['slot_id']}"
-            assert result["task_id"] == "t_e2e_001", f"期望 t_e2e_001, 得到 {result['task_id']}"
+            assert result["task_id"] == "SignalBridge-v1-E2ETest", f"期望 SignalBridge-v1-E2ETest, 得到 {result['task_id']}"
             print("PASS 派发结果正确")
 
             # 5. 验证队列文件已移除（防重复派发）
@@ -149,21 +148,21 @@ POOL: work
             slot = runtime.get_slot("worker_01")
             assert slot is not None, "worker_01 槽位不存在"
             assert slot.busy is True, "槽位未标记为 busy"
-            assert slot.assigned_task_id == "t_e2e_001", "槽位未绑定任务 ID"
+            assert slot.assigned_task_id == "SignalBridge-v1-E2ETest", "槽位未绑定任务 ID"
             print("PASS worker_01 槽位已占用，任务 ID 已绑定")
 
             # 10. 信号生命周期演示
             print(f"\nINFO signal lifecycle demo:")
 
-            r1 = send_signal(signal_port, "worker_01", "t_e2e_001", "online", message="worker started")
+            r1 = send_signal(signal_port, "worker_01", "SignalBridge-v1-E2ETest", "online", message="worker started")
             print(f"   online → state_1: {r1.get('to_state')} | accepted: {r1.get('accepted')}")
             assert r1["accepted"] is True
 
-            r2 = send_signal(signal_port, "worker_01", "t_e2e_001", "start_writing", message="writing files")
+            r2 = send_signal(signal_port, "worker_01", "SignalBridge-v1-E2ETest", "start_writing", message="writing files")
             print(f"   start_writing → state_2: {r2.get('to_state')} | accepted: {r2.get('accepted')}")
             assert r2["accepted"] is True
 
-            r3 = send_signal(signal_port, "worker_01", "t_e2e_001", "done", message="task completed")
+            r3 = send_signal(signal_port, "worker_01", "SignalBridge-v1-E2ETest", "done", message="task completed")
             print(f"   done → state_3: {r3.get('to_state')} | accepted: {r3.get('accepted')} | terminal: {r3.get('is_terminal')}")
             assert r3["accepted"] is True
             assert r3.get("is_terminal") is True

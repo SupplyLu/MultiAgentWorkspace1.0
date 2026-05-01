@@ -27,8 +27,8 @@ def test_concurrent_dispatch_slot_reservation_race(tmp_path):
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create two tasks
-    (queue_dir / "task_001.txt").write_text("TASK_ID: t_001\n\nbody1", encoding="utf-8")
-    (queue_dir / "task_002.txt").write_text("TASK_ID: t_002\n\nbody2", encoding="utf-8")
+    (queue_dir / "task_001.txt").write_text("PROJECT_KEY: SignalBridge-v1-Build\n\nbody1", encoding="utf-8")
+    (queue_dir / "task_002.txt").write_text("PROJECT_KEY: SignalBridge-v2-Build\n\nbody2", encoding="utf-8")
 
     runtime = WorkRuntime(root_dir=tmp_path, signal_port=18900)
 

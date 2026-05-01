@@ -34,8 +34,8 @@ def test_concurrent_dispatch_slot_reservation_race(tmp_path):
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create two tasks
-    (queue_dir / "task_001.txt").write_text("TASK_ID: t_001\nFEATURE_ID: f_001\n\nbody1", encoding="utf-8")
-    (queue_dir / "task_002.txt").write_text("TASK_ID: t_002\nFEATURE_ID: f_002\n\nbody2", encoding="utf-8")
+    (queue_dir / "task_001.txt").write_text("PROJECT_KEY: SignalBridge-v1-Build\n\nbody1", encoding="utf-8")
+    (queue_dir / "task_002.txt").write_text("PROJECT_KEY: SignalBridge-v2-Build\n\nbody2", encoding="utf-8")
 
     runtime = ThinkingRuntime(root_dir=tmp_path, signal_port=19100)
 
@@ -104,13 +104,13 @@ def test_stale_signal_ignored_after_slot_reuse(tmp_path):
     # Simulate slot lifecycle: task_old -> done -> task_new
     slot = runtime.get_slot("sub_brain_01")
     slot.busy = True
-    slot.assigned_task_id = "t_old"
+    slot.assigned_task_id = "SignalBridge-v1-Old"
     slot.launch_result = {"launched": True, "job_handle": 0x1}
 
     # Release slot with done signal
     runtime.handle_signal({
         "agent_id": "sub_brain_01",
-        "task_id": "t_old",
+        "task_id": "SignalBridge-v1-Old",
         "signal": "done",
         "is_terminal": True,
     })
@@ -120,20 +120,20 @@ def test_stale_signal_ignored_after_slot_reuse(tmp_path):
 
     # Reassign slot to new task
     slot.busy = True
-    slot.assigned_task_id = "t_new"
+    slot.assigned_task_id = "SignalBridge-v2-Build"
     slot.launch_result = {"launched": True, "job_handle": 0x2}
 
     # Stale signal from old task arrives late
     runtime.handle_signal({
         "agent_id": "sub_brain_01",
-        "task_id": "t_old",  # Mismatched task_id
+        "task_id": "SignalBridge-v1-Old",  # Mismatched task_id
         "signal": "failed",
         "is_terminal": True,
     })
 
     # Slot should remain busy with new task
     assert slot.busy is True
-    assert slot.assigned_task_id == "t_new"
+    assert slot.assigned_task_id == "SignalBridge-v2-Build"
     assert slot.launch_result["job_handle"] == 0x2
 
 
@@ -165,7 +165,7 @@ def test_concurrent_signal_and_timeout_race(tmp_path):
         # Setup slot with expired timeout
         slot = runtime.get_slot("sub_brain_01")
         slot.busy = True
-        slot.assigned_task_id = "t_race"
+        slot.assigned_task_id = "SignalBridge-v1-Race"
         slot.assigned_at_epoch = time.time() - 400  # Expired
         slot.timeout_seconds = 300
         slot.launch_result = {"launched": True, "job_handle": 0xBEEF}
@@ -176,7 +176,7 @@ def test_concurrent_signal_and_timeout_race(tmp_path):
             try:
                 runtime.handle_signal({
                     "agent_id": "sub_brain_01",
-                    "task_id": "t_race",
+                    "task_id": "SignalBridge-v1-Race",
                     "signal": "done",
                     "is_terminal": True,
                 })
@@ -240,7 +240,7 @@ def test_handle_signal_ignores_non_busy_slot(tmp_path):
         # Send terminal signal
         runtime.handle_signal({
             "agent_id": "sub_brain_01",
-            "task_id": "t_phantom",
+            "task_id": "SignalBridge-v1-Phantom",
             "signal": "done",
             "is_terminal": True,
         })

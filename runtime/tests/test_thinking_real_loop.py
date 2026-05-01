@@ -19,18 +19,17 @@ def test_real_worker_closed_loop():
     outbox_dir = thinking_pool / "Outbox"
 
     # 我们用一个特定的任务ID，避免和其他任务混淆
-    task_id = "t_real_thinking_001"
-    task_file = queue_dir / f"task_{task_id}.txt"
+    project_key = "SignalBridge-v1-Build"
+    task_file = queue_dir / f"task_{project_key}.txt"
 
     # 构造任务内容。这里明确告诉 Worker 不要进行实际代码编写，只需要输出一个文本证明它跑过，
     # 并且严格遵守 thinking pool 的 lifecycle 信号
     task_content = f"""FROM: system
 TO: thinker
-TASK_ID: {task_id}
-FEATURE_ID: test
+PROJECT_KEY: {project_key}
 TIMEOUT: 180
 
-Please read BOOTSTRAP.txt in the current directory and follow it exactly.
+Please read THINKING_BOOTSTRAP.txt in the current directory and follow it exactly.
 This is an observation task for the Thinking Pool.
 Work only inside workspace/.
 Create a file named "thinking_result.txt" in workspace/ with content "This is a real thinking test."
@@ -52,16 +51,13 @@ After finishing the thinking phase, continue to summarizing and then complete th
         # Check initial state
         print(f"[DEBUG] Queue tasks: {runtime.list_queue_tasks()}")
         print(f"[DEBUG] Slots: {list(runtime._slots.keys())}")
-        slot = runtime.get_slot("sub_brain_01")
-        if slot:
-            print(f"[DEBUG] Slot busy: {slot.busy}, assigned: {slot.assigned_task_id}")
 
         # Dispatch
         result = runtime.dispatch_next(dry_run=False)
         print(f"[DEBUG] Dispatch result: {result}")
         assert result["dispatched"] is True, f"Dispatch failed: {result}"
-        assert result["slot_id"] == "sub_brain_01"
-        assert result["task_id"] == task_id
+        slot_id = result["slot_id"]
+        assert result["task_id"] == project_key
 
         # 轮询等待任务完成 (Timeout: 240s)
         max_wait = 240
@@ -69,7 +65,7 @@ After finishing the thinking phase, continue to summarizing and then complete th
         is_done = False
 
         while time.time() - start_wait < max_wait:
-            slot = runtime.get_slot("sub_brain_01")
+            slot = runtime.get_slot(slot_id)
             if not slot.busy:
                 is_done = True
                 break
@@ -80,7 +76,7 @@ After finishing the thinking phase, continue to summarizing and then complete th
         assert is_done, "Task did not finish within timeout (240s)."
 
         # 验证 Outbox
-        task_outbox = outbox_dir / task_id
+        task_outbox = outbox_dir / project_key
         assert task_outbox.exists()
         result_file = task_outbox / "thinking_result.txt"
         assert result_file.exists()
@@ -93,7 +89,7 @@ After finishing the thinking phase, continue to summarizing and then complete th
         events_data = index_data.get("events", [])
 
         # 过滤出当前 task 的事件
-        task_events = [e for e in events_data if e["task_id"] == task_id]
+        task_events = [e for e in events_data if e["task_id"] == project_key]
         signals = [e["signal"] for e in task_events]
 
         assert "online" in signals

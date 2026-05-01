@@ -15,6 +15,8 @@ from app.services.pool_state_templates import PoolStateTemplateRegistry
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+MAX_SIGNAL_BODY_BYTES = 10 * 1024 * 1024
+
 
 class SignalHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args):
@@ -32,55 +34,74 @@ class SignalHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        content_length = int(self.headers.get("Content-Length", 0))
+        content_length_header = self.headers.get("Content-Length", "0")
+        try:
+            content_length = int(content_length_header)
+        except ValueError:
+            self._send_json_response(400, {"accepted": False, "reason": "invalid content length"})
+            return
+
+        if content_length < 0:
+            self._send_json_response(400, {"accepted": False, "reason": "invalid content length"})
+            return
+
+        if self.path == "/signal":
+            content_type = self.headers.get("Content-Type", "")
+            if content_type.split(";", 1)[0].strip().lower() != "application/json":
+                self._send_json_response(400, {"accepted": False, "reason": "content type must be application/json"})
+                return
+
+            if content_length > MAX_SIGNAL_BODY_BYTES:
+                self.rfile.read(content_length)
+                self._send_json_response(400, {"accepted": False, "reason": "request body too large"})
+                return
+
         body = self.rfile.read(content_length).decode("utf-8")
 
         try:
             payload = json.loads(body)
         except json.JSONDecodeError:
             if self.path.startswith("/api/"):
-                self.send_response(400)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"reason": "malformed JSON"}, ensure_ascii=False).encode("utf-8"))
+                self._send_json_response(400, {"reason": "malformed JSON"})
             else:
-                self.send_error(400)
+                self._send_json_response(400, {"accepted": False, "reason": "malformed JSON"})
             return
 
         if self.path == "/signal":
             server = cast("SignalHTTPServer", self.server)
             result = server.runtime_server.process_signal(payload)
-
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+            status_code = 200 if result["accepted"] else 500 if result.get("error_type") == "internal" else 400
+            self._send_json_response(status_code, result)
         elif self.path.startswith("/api/"):
             self._handle_api_request("POST", payload)
 
     def _handle_api_request(self, method: str, payload: dict | None):
         server = cast("SignalHTTPServer", self.server)
         if server.runtime_server.on_api_request is None:
-            self.send_response(404)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"reason": "no API handler registered"}, ensure_ascii=False).encode("utf-8"))
+            self._send_json_response(404, {"reason": "no API handler registered"})
             return
 
         try:
             result = server.runtime_server.on_api_request(method, self.path, payload)
         except Exception as e:
             logger.error("API handler exception: %s", e, exc_info=True)
-            self.send_response(500)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"reason": "api handler failed"}, ensure_ascii=False).encode("utf-8"))
+            self._send_json_response(
+                500,
+                {
+                    "reason": "api handler failed",
+                    "error": str(e),
+                    "error_type": "internal",
+                },
+            )
             return
 
-        self.send_response(200)
+        self._send_json_response(200, result)
+
+    def _send_json_response(self, status_code: int, payload: dict[str, Any]):
+        self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
 
 class SignalHTTPServer(HTTPServer):
@@ -119,11 +140,11 @@ class RuntimeSignalServer:
         pool = payload.get("pool", "work")
 
         if not agent_id or not task_id or not signal:
-            return {"accepted": False, "reason": "missing required fields"}
+            return {"accepted": False, "reason": "missing required fields", "error_type": "validation"}
 
         template = self.template_registry.get_template(pool)
         if template is None:
-            return {"accepted": False, "reason": f"unknown pool: {pool}"}
+            return {"accepted": False, "reason": f"unknown pool: {pool}", "error_type": "validation"}
 
         current_state = self.event_store.get_current_state(agent_id, task_id) or template.initial_state
         next_state = template.get_next_state(current_state, signal)
@@ -133,6 +154,7 @@ class RuntimeSignalServer:
                 "accepted": False,
                 "reason": f"illegal transition: signal={signal} from state={current_state} in pool={pool}",
                 "current_state": current_state,
+                "error_type": "validation",
             }
 
         is_terminal = template.is_terminal(next_state)
@@ -153,8 +175,6 @@ class RuntimeSignalServer:
             is_terminal=is_terminal,
         )
 
-        self.event_store.append(event)
-
         result = {
             "accepted": True,
             "agent_id": agent_id,
@@ -165,11 +185,25 @@ class RuntimeSignalServer:
             "is_terminal": is_terminal,
         }
 
+        # Persist event BEFORE calling hook to ensure durability even if hook fails
+        self.event_store.append(event)
+
         if self.on_signal:
             try:
                 self.on_signal(result)
             except Exception as e:
-                logger.error("on_signal hook error: %s", e)
+                logger.error("on_signal hook error: %s", e, exc_info=True)
+                return {
+                    "accepted": False,
+                    "reason": "on_signal hook failed",
+                    "error_type": "internal",
+                    "agent_id": agent_id,
+                    "task_id": task_id,
+                    "signal": signal,
+                    "from_state": current_state,
+                    "to_state": next_state,
+                    "is_terminal": is_terminal,
+                }
 
         return result
 

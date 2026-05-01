@@ -45,9 +45,9 @@ def test_thinking_runtime_closed_loop_integration(tmp_path):
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create task
-    task_id = "t_int_001"
+    task_id = "SignalBridge-v1-Build"
     task_file = queue_dir / "task_int.txt"
-    task_file.write_text(f"TASK_ID: {task_id}\nFEATURE_ID: f_int_001\n\nDo some deep thinking.", encoding="utf-8")
+    task_file.write_text(f"PROJECT_KEY: {task_id}\n\nDo some deep thinking.", encoding="utf-8")
 
     # 2. Init Runtime
     signal_port = 19150

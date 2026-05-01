@@ -106,8 +106,8 @@ def test_list_queue_tasks_ignores_hidden_files(tmp_path):
     assert not any(t.suffix != ".txt" for t in tasks)
 
 
-def test_dispatch_next_uses_20_minute_default_timeout_when_header_missing(tmp_path):
-    """Test that dispatch_next falls back to 20 minutes when TIMEOUT header is absent."""
+def test_dispatch_next_uses_30_minute_default_timeout_when_header_missing(tmp_path):
+    """Test that dispatch_next falls back to 30 minutes when TIMEOUT header is absent."""
     queue_dir = tmp_path / "pools" / "construct" / "Queue"
     queue_dir.mkdir(parents=True)
     construct_pool = tmp_path / "pools" / "construct"
@@ -157,7 +157,7 @@ Please construct the project root.
         assert result["dispatched"] is True
         slot = runtime.get_slot("constructor_01")
         assert slot is not None
-        assert slot.timeout_seconds == 1200
+        assert slot.timeout_seconds == 1800
     finally:
         lm_module.LaunchManager.launch = original_launch
 
@@ -215,7 +215,7 @@ Please construct the project root.
         assert result["dispatched"] is True
         slot = runtime.get_slot("constructor_01")
         assert slot is not None
-        assert slot.timeout_seconds == 1200
+        assert slot.timeout_seconds == 1800
     finally:
         lm_module.LaunchManager.launch = original_launch
 
@@ -496,7 +496,7 @@ def test_list_queue_tasks_converts_folder_to_reference_txt(tmp_path):
     # Create a batch folder in Queue (simulating Thinking Pool Outbox deposit)
     batch_folder = queue_dir / "pid_simulink_001"
     batch_folder.mkdir()
-    (batch_folder / "summary.txt").write_text("BATCH_ID: pid_simulink_001\n", encoding="utf-8")
+    (batch_folder / "summary.txt").write_text("PROJECT_KEY: pid_simulink_001\n", encoding="utf-8")
     (batch_folder / "task_controller.txt").write_text("Implement PID controller\n", encoding="utf-8")
 
     runtime = ConstructRuntime(root_dir=tmp_path)
@@ -517,27 +517,27 @@ def test_list_queue_tasks_converts_folder_to_reference_txt(tmp_path):
     assert (field_dir / "input" / "task_controller.txt").exists()
 
 
-def test_extract_batch_id_from_summary_txt(tmp_path):
-    """Test that _extract_batch_id reads BATCH_ID from summary.txt."""
+def test_extract_project_key_from_summary_txt(tmp_path):
+    """Test that _extract_project_key reads PROJECT_KEY from summary.txt."""
     from app.runtimes.construct_runtime import ConstructRuntime
 
     construct_pool = tmp_path / "pools" / "construct"
     queue_dir = construct_pool / "Queue"
     queue_dir.mkdir(parents=True)
 
-    # Case 1: folder with summary.txt containing BATCH_ID
+    # Case 1: folder with summary.txt containing PROJECT_KEY
     batch_folder = queue_dir / "my_batch_001"
     batch_folder.mkdir()
-    (batch_folder / "summary.txt").write_text("BATCH_ID: my_batch_001\nContent: some thinking\n", encoding="utf-8")
+    (batch_folder / "summary.txt").write_text("PROJECT_KEY: my_batch_001\nContent: some thinking\n", encoding="utf-8")
 
     runtime = ConstructRuntime(root_dir=tmp_path)
-    batch_id = runtime._extract_batch_id(batch_folder)
+    project_key = runtime._extract_project_key(batch_folder)
 
-    assert batch_id == "my_batch_001", f"Expected 'my_batch_001', got '{batch_id}'"
+    assert project_key == "my_batch_001", f"Expected 'my_batch_001', got '{project_key}'"
 
 
-def test_extract_batch_id_fallback_to_folder_name(tmp_path):
-    """Test that _extract_batch_id falls back to folder name when no BATCH_ID."""
+def test_extract_project_key_fallback_to_folder_name(tmp_path):
+    """Test that _extract_project_key falls back to folder name when no PROJECT_KEY."""
     from app.runtimes.construct_runtime import ConstructRuntime
 
     construct_pool = tmp_path / "pools" / "construct"
@@ -550,9 +550,9 @@ def test_extract_batch_id_fallback_to_folder_name(tmp_path):
     (batch_folder / "task_x.txt").write_text("some task\n", encoding="utf-8")
 
     runtime = ConstructRuntime(root_dir=tmp_path)
-    batch_id = runtime._extract_batch_id(batch_folder)
+    project_key = runtime._extract_project_key(batch_folder)
 
-    assert batch_id == "orphan_batch", f"Expected 'orphan_batch', got '{batch_id}'"
+    assert project_key == "orphan_batch", f"Expected 'orphan_batch', got '{project_key}'"
 
 
 def test_preprocess_queue_folders_idempotent(tmp_path):
@@ -565,7 +565,7 @@ def test_preprocess_queue_folders_idempotent(tmp_path):
 
     batch_folder = queue_dir / "idempotent_test"
     batch_folder.mkdir()
-    (batch_folder / "summary.txt").write_text("BATCH_ID: idempotent_test\n", encoding="utf-8")
+    (batch_folder / "summary.txt").write_text("PROJECT_KEY: idempotent_test\n", encoding="utf-8")
     (batch_folder / "task_1.txt").write_text("task 1\n", encoding="utf-8")
 
     runtime = ConstructRuntime(root_dir=tmp_path)
@@ -600,7 +600,7 @@ def test_cleanup_batch_field_on_done(tmp_path):
     # Simulate: queue has a folder, list_queue_tasks preprocesses it
     batch_folder = queue_dir / "batch_cleanup_test"
     batch_folder.mkdir()
-    (batch_folder / "summary.txt").write_text("BATCH_ID: batch_cleanup_test\n", encoding="utf-8")
+    (batch_folder / "summary.txt").write_text("PROJECT_KEY: batch_cleanup_test\n", encoding="utf-8")
 
     runtime = ConstructRuntime(root_dir=tmp_path)
     runtime.list_queue_tasks()
@@ -638,7 +638,7 @@ def test_mixed_txt_and_folder_queue(tmp_path):
     # Put a folder batch in Queue
     batch_folder = queue_dir / "mixed_batch"
     batch_folder.mkdir()
-    (batch_folder / "summary.txt").write_text("BATCH_ID: mixed_batch\n", encoding="utf-8")
+    (batch_folder / "summary.txt").write_text("PROJECT_KEY: mixed_batch\n", encoding="utf-8")
     (batch_folder / "task_x.txt").write_text("x\n", encoding="utf-8")
 
     runtime = ConstructRuntime(root_dir=tmp_path)
@@ -661,17 +661,17 @@ def test_build_batch_task_txt_format(tmp_path):
 
     batch_folder = queue_dir / "format_test"
     batch_folder.mkdir()
-    (batch_folder / "summary.txt").write_text("BATCH_ID: format_test\n", encoding="utf-8")
+    (batch_folder / "summary.txt").write_text("PROJECT_KEY: format_test\n", encoding="utf-8")
 
     runtime = ConstructRuntime(root_dir=tmp_path)
     field_dir = construct_pool / "fields" / "format_test"
     field_dir.mkdir(parents=True, exist_ok=True)
 
-    content = runtime._build_batch_task_txt("format_test", field_dir)
+    content = runtime._build_project_task_txt("format_test", field_dir)
 
     # Verify key fields
     assert "FROM: thinking_pool" in content
-    assert "TASK_ID: format_test" in content
+    assert "PROJECT_KEY: format_test" in content
     assert "INPUT_MODE: batch_dir" in content
     assert "BATCH_FIELD:" in content
     assert "batch_dir" in content
@@ -696,7 +696,7 @@ def test_dispatch_next_uses_construct_specific_bootstrap_and_copies_batch_into_w
 
     batch_dir = queue_dir / "batch_workspace_copy"
     batch_dir.mkdir()
-    (batch_dir / "summary.txt").write_text("BATCH_ID: batch_workspace_copy\n", encoding="utf-8")
+    (batch_dir / "summary.txt").write_text("PROJECT_KEY: batch_workspace_copy\n", encoding="utf-8")
     (batch_dir / "task_alpha.txt").write_text("alpha\n", encoding="utf-8")
 
     runtime = ConstructRuntime(root_dir=tmp_path, signal_port=19030)
@@ -779,7 +779,7 @@ def test_handle_signal_done_moves_workspace_to_outbox_and_clears_workspace(tmp_p
     assert slot.busy is False
     assert not any(workspace_dir.iterdir())
 
-    outbox_batch_dir = construct_pool / "Outbox" / "batch_done_move" / "batch_done_move"
+    outbox_batch_dir = construct_pool / "Outbox" / "batch_done_move"
     assert outbox_batch_dir.exists()
     assert (outbox_batch_dir / "summary.txt").read_text(encoding="utf-8") == "done summary"
     assert (outbox_batch_dir / "task_alpha.txt").read_text(encoding="utf-8") == "done task"

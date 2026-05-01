@@ -43,9 +43,10 @@ class LifecycleEvent:
 class EventStore:
     """Append-only 事件存储"""
 
-    def __init__(self, store_dir: Path | str):
+    def __init__(self, store_dir: Path | str, index_limit: int = 1000):
         self._store_dir = Path(store_dir)
         self._store_dir.mkdir(parents=True, exist_ok=True)
+        self._index_limit = index_limit
         self._index_store = JSONStore(
             self._store_dir / "events_index.json",
             default_factory=lambda: {"events": []},
@@ -62,24 +63,26 @@ class EventStore:
         ts_safe = event.timestamp.replace(":", "-").replace(".", "-")
         event_file = self._store_dir / f"evt_{ts_safe}_{event.agent_id}_{event.signal}.json"
 
-        with open(event_file, "w", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
+        JSONStore(
+            event_file,
+            default_factory=lambda: record,
+        ).write(record)
 
-        self._index_store.update(
-            lambda idx: {
-                **idx,
-                "events": idx["events"]
-                + [
-                    {
-                        "file": str(event_file),
-                        "timestamp": event.timestamp,
-                        "agent_id": event.agent_id,
-                        "task_id": event.task_id,
-                        "signal": event.signal,
-                    }
-                ],
-            }
-        )
+        def update_index(idx: dict) -> dict:
+            events = idx.get("events", [])
+            events.append({
+                "file": str(event_file),
+                "timestamp": event.timestamp,
+                "agent_id": event.agent_id,
+                "task_id": event.task_id,
+                "signal": event.signal,
+            })
+            # Enforce index limit
+            if len(events) > self._index_limit:
+                events = events[-self._index_limit:]
+            return {**idx, "events": events}
+
+        self._index_store.update(update_index)
 
         return record
 
@@ -105,12 +108,28 @@ class EventStore:
             try:
                 with open(event["file"], encoding="utf-8") as f:
                     result.append(json.load(f))
-            except OSError:
-                pass
-            except json.JSONDecodeError:
-                pass
+            except (OSError, json.JSONDecodeError):
+                continue
 
         return result
+
+    def get_index_stats(self) -> dict[str, int]:
+        """Return simple index health stats."""
+        index = self._index_store.read()
+        events = index.get("events", [])
+        corrupt_files = 0
+
+        for event in events:
+            try:
+                with open(event["file"], encoding="utf-8") as f:
+                    json.load(f)
+            except (OSError, json.JSONDecodeError):
+                corrupt_files += 1
+
+        return {
+            "total_events": len(events),
+            "corrupt_files": corrupt_files,
+        }
 
     def get_current_state(self, agent_id: str, task_id: str | None = None) -> str | None:
         """获取指定 agent/task 最近一次事件后的状态"""

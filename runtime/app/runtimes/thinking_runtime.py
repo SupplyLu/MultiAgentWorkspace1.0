@@ -19,43 +19,33 @@ import fnmatch
 import re
 
 from app.services.signal_server import RuntimeSignalServer
+from app.services.slot_governance_store import SlotGovernanceStore
 from app.shared.launch_manager import LaunchManager, LaunchRequest
 from app.shared.shutdown_manager import ShutdownManager
-from app.shared.file_queue import parse_task_file
+from app.shared.file_queue import parse_task_file, parse_task_header, split_task_file_content
 from app.shared.json_store import JSONStore
 
 # ---------------------------------------------------------------------------
 # 输入校验与转义
 # ---------------------------------------------------------------------------
 
-# 允许的字符集：字母、数字、下划线、连字符
-_TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+# 允许的字符集：字母、数字、下划线、连字符、点（支持版本号如 1.0.2）
+_TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 # Timeout 边界（秒）
 _MIN_TIMEOUT = 60      # 最少 60 秒（防止误配）
 _MAX_TIMEOUT = 86400  # 最多 24 小时
 
 def _validate_task_id(task_id: str) -> str:
-    """校验 task_id 格式，只允许 [A-Za-z0-9_-]，非法时抛出 ValueError。"""
+    """校验 task_id 格式，只允许 [A-Za-z0-9_.-]，非法时抛出 ValueError。"""
     if not task_id:
         raise ValueError("task_id cannot be empty")
     if not _TASK_ID_PATTERN.match(task_id):
         raise ValueError(
             f"Invalid task_id format: '{task_id}'. "
-            f"Only [A-Za-z0-9_-] allowed."
+            f"Only [A-Za-z0-9_.-] allowed."
         )
     return task_id
-
-def _validate_feature_id(feature_id: str) -> str:
-    """校验 feature_id 格式，只允许 [A-Za-z0-9_-]，非法时抛出 ValueError。"""
-    if not feature_id:
-        raise ValueError("feature_id cannot be empty")
-    if not _TASK_ID_PATTERN.match(feature_id):
-        raise ValueError(
-            f"Invalid feature_id format: '{feature_id}'. "
-            f"Only [A-Za-z0-9_-] allowed."
-        )
-    return feature_id
 
 def _validate_timeout(timeout_seconds: int) -> int:
     """校验并规范化 timeout 值，超出边界时 clip 到边界。"""
@@ -101,6 +91,7 @@ class ThinkingSlot:
     timeout_seconds: int = 300
     # [Fix P2] Record last known state for accurate timeout events
     last_known_state: str = "state_0"
+    enabled: bool = True
 
 
 class ThinkingRuntime:
@@ -119,6 +110,7 @@ class ThinkingRuntime:
 
         # Dynamic slot discovery: scan sub_brain_*
         self._slots: dict[str, ThinkingSlot] = {}
+        self._governance_store = SlotGovernanceStore(root_dir=self._root_dir)
         self._init_slots()
 
         # Signal server - 每个 Runtime 有自己的独立实例
@@ -156,6 +148,7 @@ class ThinkingRuntime:
             workspace_dir = slot_dir / "workspace"
             if not workspace_dir.exists() or not workspace_dir.is_dir():
                 continue
+            enabled = self._governance_store.is_enabled("thinking", slot_id)
             self._slots[slot_id] = ThinkingSlot(
                 slot_id=slot_id,
                 slot_dir=slot_dir,
@@ -163,6 +156,7 @@ class ThinkingRuntime:
                 busy=False,
                 assigned_task_id="",
                 launch_result=None,
+                enabled=enabled,
             )
 
     def _deploy_lifecycle_bats(self, slot: ThinkingSlot) -> None:
@@ -193,7 +187,7 @@ class ThinkingRuntime:
             slot_ids = sorted(self._slots.keys())
             for slot_id in slot_ids:
                 slot = self._slots[slot_id]
-                if not slot.busy:
+                if slot.enabled and not slot.busy:
                     return slot
             return None
 
@@ -263,7 +257,7 @@ class ThinkingRuntime:
             slot_ids = sorted(self._slots.keys())
             for slot_id in slot_ids:
                 candidate = self._slots[slot_id]
-                if not candidate.busy:
+                if candidate.enabled and not candidate.busy:
                     candidate.busy = True
                     slot = candidate
                     break
@@ -293,17 +287,19 @@ class ThinkingRuntime:
 
         # Parse task file to get headers
         try:
-            task_data = parse_task_file(task_file)
-            headers = task_data.get("headers") or task_data.get("header") or {}
-            raw_task_id = headers.get("TASK_ID", "")
-            raw_feature_id = headers.get("FEATURE_ID", "")
-            raw_timeout = headers.get("TIMEOUT", "300")
-            raw_content = task_data.get("raw", "")
             original_name = task_file.name[:-11] if task_file.name.endswith(".processing") else task_file.name
+            raw_content = task_file.read_text(encoding="utf-8")
+            header_text, _ = split_task_file_content(raw_content)
+            headers = parse_task_header(header_text)
 
-            # [Security Fix] 输入白名单校验
-            task_id = _validate_task_id(raw_task_id)
-            feature_id = _validate_feature_id(raw_feature_id)
+            # [Project-centric] Only accept PROJECT_KEY as task identifier
+            project_key = headers.get("PROJECT_KEY", "")
+            if not project_key:
+                raise ValueError("PROJECT_KEY is required")
+
+            task_id = _validate_task_id(project_key)
+
+            raw_timeout = headers.get("TIMEOUT", "1800")  # Default 30min for thinking tasks
             try:
                 parsed_timeout = int(raw_timeout)
             except (TypeError, ValueError) as e:
@@ -347,8 +343,8 @@ REM Pool: thinking
 
 set "AGENT_ID={_escape_bat_var(slot.slot_id)}"
 set "TASK_ID={_escape_bat_var(task_id)}"
+set "PROJECT_KEY={_escape_bat_var(task_id)}"
 set "ROLE=thinker"
-set "FEATURE_ID={_escape_bat_var(feature_id)}"
 set "POOL=thinking"
 set "SIGNAL_SERVER_PORT={self._signal_port}"
 
@@ -567,11 +563,19 @@ exit /b %ERRORLEVEL%
         out_dir = self._outbox_dir / task_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        workspace_items = list(slot.workspace_dir.iterdir())
+        workspace_files = [item for item in workspace_items if item.is_file()]
+        workspace_dirs = [item for item in workspace_items if item.is_dir()]
+
+        source_root = slot.workspace_dir
+        if not workspace_files and len(workspace_dirs) == 1 and workspace_dirs[0].name == task_id:
+            source_root = workspace_dirs[0]
+
         copied_files: list[str] = []
-        for item in slot.workspace_dir.rglob("*"):
+        for item in source_root.rglob("*"):
             if not item.is_file():
                 continue
-            rel = item.relative_to(slot.workspace_dir)
+            rel = item.relative_to(source_root)
             dst = out_dir / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item, dst)
@@ -604,6 +608,10 @@ exit /b %ERRORLEVEL%
             return self._resume()
         elif method == "GET" and path == "/api/control/state":
             return self._get_control_state()
+        elif method == "POST" and path == "/api/control/slot/offline":
+            return self._slot_offline(payload)
+        elif method == "POST" and path == "/api/control/slot/online":
+            return self._slot_online(payload)
         else:
             return {"error": "unknown endpoint"}
 
@@ -624,16 +632,43 @@ exit /b %ERRORLEVEL%
             "pool": "thinking",
         }
 
+    def _slot_offline(self, payload: dict | None) -> dict[str, Any]:
+        if not payload or "slot_id" not in payload:
+            return {"success": False, "error": "slot_id required"}
+        slot_id = payload["slot_id"]
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return {"success": False, "error": f"slot not found: {slot_id}"}
+        with self._lock:
+            slot.enabled = False
+            self._governance_store.set_enabled("thinking", slot_id, False)
+        return {"success": True, "pool": "thinking", "slot_id": slot_id, "enabled": False, "busy": slot.busy}
+
+    def _slot_online(self, payload: dict | None) -> dict[str, Any]:
+        if not payload or "slot_id" not in payload:
+            return {"success": False, "error": "slot_id required"}
+        slot_id = payload["slot_id"]
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return {"success": False, "error": f"slot not found: {slot_id}"}
+        with self._lock:
+            slot.enabled = True
+            self._governance_store.set_enabled("thinking", slot_id, True)
+        return {"success": True, "pool": "thinking", "slot_id": slot_id, "enabled": True, "busy": slot.busy}
+
     def _get_status(self) -> dict[str, Any]:
         """Return current runtime status with pool info and slot states."""
         with self._lock:
             slots_data = []
             for slot_id in sorted(self._slots.keys()):
                 slot = self._slots[slot_id]
+                current_state = slot.last_known_state if slot.last_known_state != "state_0" else ("state_1" if slot.busy else "idle")
                 slots_data.append({
                     "slot_id": slot.slot_id,
                     "busy": slot.busy,
                     "assigned_task_id": slot.assigned_task_id,
+                    "current_state": current_state,
+                    "enabled": slot.enabled,
                 })
 
             queue_count = len(self.list_queue_tasks())

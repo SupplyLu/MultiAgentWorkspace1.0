@@ -1,7 +1,7 @@
 """Security tests for ThinkingRuntime input validation and escaping.
 
 Tests cover:
-- task_id / feature_id format validation
+- project_key format validation
 - timeout boundary validation
 - Windows batch variable escaping
 - Command injection prevention
@@ -13,7 +13,6 @@ import pytest
 from app.runtimes.thinking_runtime import (
     ThinkingRuntime,
     _validate_task_id,
-    _validate_feature_id,
     _validate_timeout,
     _escape_bat_var,
 )
@@ -33,6 +32,8 @@ def test_validate_task_id_accepts_valid_formats():
         "task123",
         "a",
         "A-B_C-1",
+        "SignalBridge-v1-Build",
+        "SignalBridge-1.0.2-Release",
     ]
     for task_id in valid_ids:
         result = _validate_task_id(task_id)
@@ -70,38 +71,6 @@ def test_validate_task_id_rejects_special_characters():
     for task_id in invalid_ids:
         with pytest.raises(ValueError, match="Invalid task_id format"):
             _validate_task_id(task_id)
-
-
-def test_validate_feature_id_accepts_valid_formats():
-    """Test that valid feature_id formats are accepted."""
-    valid_ids = [
-        "feature_001",
-        "f_real_002",
-        "pid-tuner",
-        "FEATURE_ABC",
-        "feature123",
-    ]
-    for feature_id in valid_ids:
-        result = _validate_feature_id(feature_id)
-        assert result == feature_id
-
-
-def test_validate_feature_id_rejects_empty():
-    """Test that empty feature_id is rejected."""
-    with pytest.raises(ValueError, match="cannot be empty"):
-        _validate_feature_id("")
-
-
-def test_validate_feature_id_rejects_special_characters():
-    """Test that feature_id with special characters is rejected."""
-    invalid_ids = [
-        "feature&001",
-        "feature|002",
-        "feature;003",
-    ]
-    for feature_id in invalid_ids:
-        with pytest.raises(ValueError, match="Invalid feature_id format"):
-            _validate_feature_id(feature_id)
 
 
 def test_validate_timeout_clips_to_min():
@@ -205,12 +174,11 @@ def test_dispatch_rejects_malicious_task_id(tmp_path):
     for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
-    # Create task with malicious task_id
+    # Create task with malicious PROJECT_KEY
     task_file = queue_dir / "task_malicious.txt"
     task_content = """FROM: runtime
 TO: sub_brain_01
-TASK_ID: task_001 & calc.exe
-FEATURE_ID: feature_001
+PROJECT_KEY: task_001 & calc.exe
 
 Malicious task.
 """
@@ -244,8 +212,8 @@ Malicious task.
         lm_module.LaunchManager.launch = original_launch
 
 
-def test_dispatch_rejects_malicious_feature_id(tmp_path):
-    """Test that dispatch_next rejects task with malicious feature_id."""
+def test_dispatch_rejects_missing_project_key(tmp_path):
+    """Test that dispatch_next rejects task without PROJECT_KEY."""
     queue_dir = tmp_path / "pools" / "thinking" / "Queue"
     queue_dir.mkdir(parents=True)
     thinking_pool = tmp_path / "pools" / "thinking"
@@ -259,12 +227,10 @@ def test_dispatch_rejects_malicious_feature_id(tmp_path):
     for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
-    # Create task with malicious feature_id
+    # Create task without PROJECT_KEY
     task_file = queue_dir / "task_malicious2.txt"
     task_content = """FROM: runtime
 TO: sub_brain_01
-TASK_ID: task_002
-FEATURE_ID: feature|notepad
 
 Malicious task.
 """
@@ -283,7 +249,7 @@ Malicious task.
 
     try:
         # Dispatch should raise ValueError
-        with pytest.raises(ValueError, match="Invalid feature_id format"):
+        with pytest.raises(ValueError, match="PROJECT_KEY is required"):
             runtime.dispatch_next(dry_run=True)
 
     finally:
@@ -309,8 +275,7 @@ def test_dispatch_clips_invalid_timeout(tmp_path):
     task_file = queue_dir / "task_timeout.txt"
     task_content = """FROM: runtime
 TO: sub_brain_01
-TASK_ID: task_003
-FEATURE_ID: feature_003
+PROJECT_KEY: SignalBridge-v1-Build
 TIMEOUT: 999999
 
 Task with extreme timeout.
@@ -357,12 +322,11 @@ def test_dispatch_escapes_bat_variables(tmp_path):
     for f in ["Online.bat", "StartThinking.bat", "StartSummarizing.bat", "Done.bat", "signal_bridge.py", "THINKING_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
-    # Create task with valid but special-char-containing IDs
+    # Create task with valid project key
     task_file = queue_dir / "task_escape.txt"
     task_content = """FROM: runtime
 TO: sub_brain_01
-TASK_ID: task-with-percent-100
-FEATURE_ID: feature-with-dash
+PROJECT_KEY: SignalBridge-1.0-Build
 
 Task body.
 """
@@ -391,7 +355,7 @@ Task body.
 
         # Verify variables are quoted and escaped
         assert 'set "TASK_ID=' in bat_content
-        assert 'set "FEATURE_ID=' in bat_content
+        assert 'set "PROJECT_KEY=' in bat_content
 
     finally:
         lm_module.LaunchManager.launch = original_launch

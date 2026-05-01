@@ -6,13 +6,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import fnmatch
+import re
 import shutil
 import threading
 import time
 
 from app.services.signal_server import RuntimeSignalServer
+from app.services.slot_governance_store import SlotGovernanceStore
 from app.shared.file_queue import parse_task_file
 from app.shared.launch_manager import LaunchManager, LaunchRequest
+
+
+def _escape_bat_var(s: str) -> str:
+    """Escape Windows batch variable values to prevent command injection."""
+    result = s.replace("%", "%%")
+    result = result.replace("^", "^^")
+    result = result.replace("&", "^&")
+    result = result.replace("|", "^|")
+    result = result.replace("<", "^<")
+    result = result.replace(">", "^>")
+    result = result.replace('"', '^"')
+    result = result.replace("!", "^^!")
+    return result
 
 
 @dataclass
@@ -21,13 +36,13 @@ class GuardSlot:
     slot_dir: Path
     workspace_dir: Path
     busy: bool = False
+    finalizing: bool = False
     assigned_task_id: str = ""
     launch_result: dict[str, Any] | None = None
     assigned_at_epoch: float = 0.0
     timeout_seconds: int = 600
     last_known_state: str = "state_0"
-
-
+    enabled: bool = True
 class GateRuntime:
     def __init__(
         self,
@@ -47,6 +62,7 @@ class GateRuntime:
         self._gate_fields_dir.mkdir(parents=True, exist_ok=True)
 
         self._slots: dict[str, GuardSlot] = {}
+        self._governance_store = SlotGovernanceStore(root_dir=self._root_dir)
         self._init_slots()
 
         self._signal_server = RuntimeSignalServer(
@@ -77,40 +93,45 @@ class GateRuntime:
                 slot_id=slot_dir.name,
                 slot_dir=slot_dir,
                 workspace_dir=workspace_dir,
+                enabled=self._governance_store.is_enabled("gate", slot_dir.name),
             )
 
     def get_slot(self, slot_id: str) -> GuardSlot | None:
         return self._slots.get(slot_id)
 
-    def _extract_batch_id(self, folder: Path) -> str:
-        """Extract batch id from folder summary.txt, fallback to folder name."""
+    def _extract_project_key(self, folder: Path) -> str:
+        """Extract PROJECT_KEY from folder's summary.txt, fallback to folder name."""
         summary_file = folder / "summary.txt"
         if summary_file.exists() and summary_file.is_file():
             try:
                 content = summary_file.read_text(encoding="utf-8")
                 for line in content.splitlines():
-                    if line.startswith("TASK_ID:"):
-                        batch_id = line.split(":", 1)[1].strip()
-                        if batch_id:
-                            return batch_id
+                    if line.startswith("PROJECT_KEY:"):
+                        project_key = line.split(":", 1)[1].strip()
+                        if project_key:
+                            return project_key
             except (OSError, UnicodeDecodeError):
                 pass
         return folder.name
 
-    def _build_batch_task_txt(self, batch_id: str, field_dir: Path) -> str:
-        """Build the reference txt content for a gate batch review task."""
+    def _build_project_task_txt(self, project_key: str, field_dir: Path) -> str:
+        """Build the reference txt content for a gate batch review task.
+
+        Security: BATCH_FIELD only contains project_key, not absolute paths.
+        Runtime derives field_dir internally from task_id.
+        """
         return f"""FROM: construct_pool
 TO: guard_01
-TASK_ID: {batch_id}
+PROJECT_KEY: {project_key}
 TIMEOUT: 600
 INPUT_MODE: batch_dir
-BATCH_FIELD: {str(field_dir).replace(chr(92), '/')}
+BATCH_FIELD: {project_key}
 ---
 
 [Gate Task: Review Construct batch from field directory]
 
 Review all files in:
-  BATCH_FIELD/input/
+  pools/gate/fields/BATCH_FIELD/input/
 
 Instructions:
   1. Read summary.txt for the batch-level architecture and shared constraints
@@ -131,8 +152,8 @@ Instructions:
             if not item.is_dir() or item.name.startswith("."):
                 continue
 
-            batch_id = self._extract_batch_id(item)
-            field_dir = self._gate_fields_dir / batch_id
+            project_key = self._extract_project_key(item)
+            field_dir = self._gate_fields_dir / project_key
             input_dir = field_dir / "input"
             input_dir.mkdir(parents=True, exist_ok=True)
 
@@ -149,9 +170,9 @@ Instructions:
             except OSError:
                 pass
 
-            ref_txt = self._queue_dir / f"task_{batch_id}.txt"
+            ref_txt = self._queue_dir / f"task_{project_key}.txt"
             if not ref_txt.exists():
-                ref_txt.write_text(self._build_batch_task_txt(batch_id, field_dir), encoding="utf-8")
+                ref_txt.write_text(self._build_project_task_txt(project_key, field_dir), encoding="utf-8")
 
     def list_queue_tasks(self) -> list[Path]:
         if not self._queue_dir.exists():
@@ -173,7 +194,7 @@ Instructions:
         with self._lock:
             for slot_id in sorted(self._slots.keys()):
                 slot = self._slots[slot_id]
-                if not slot.busy:
+                if slot.enabled and not slot.busy and not slot.finalizing:
                     return slot
         return None
 
@@ -239,11 +260,38 @@ Instructions:
 
             slot.busy = True
             task_file = tasks[0]
+            processing_file = task_file.with_name(task_file.name + ".processing")
+            try:
+                task_file.rename(processing_file)
+                task_file = processing_file
+            except OSError:
+                slot.busy = False
+                return {"dispatched": False, "error": "Failed to claim task file"}
             raw_content = task_file.read_text(encoding="utf-8")
 
         task_data = parse_task_file(task_file)
+        if task_data is None:
+            with self._lock:
+                slot.busy = False
+            try:
+                task_file.unlink()
+            except OSError:
+                pass
+            return {"dispatched": False, "error": "Failed to parse task file (invalid or disappeared)"}
         headers = task_data.get("headers", {})
-        task_id = headers.get("TASK_ID", task_file.stem)
+        project_key = headers.get("PROJECT_KEY", "")
+        # Support legacy TASK_ID fallback for backward compatibility with existing tasks
+        if not project_key:
+            project_key = headers.get("TASK_ID", "")
+        if not project_key:
+            with self._lock:
+                slot.busy = False
+            try:
+                task_file.unlink()
+            except OSError:
+                pass
+            return {"dispatched": False, "error": "PROJECT_KEY is required"}
+        task_id = project_key
         timeout_seconds = self._parse_timeout_seconds(headers)
         original_name = f"task_{task_id}.txt"
 
@@ -264,8 +312,9 @@ Instructions:
 REM Agent launch: {slot.slot_id} for task {task_id}
 REM Pool: gate
 
-set AGENT_ID={slot.slot_id}
-set TASK_ID={task_id}
+set "AGENT_ID={_escape_bat_var(slot.slot_id)}"
+set "TASK_ID={_escape_bat_var(task_id)}"
+set "PROJECT_KEY={_escape_bat_var(task_id)}"
 set ROLE=guard
 set POOL=gate
 set SIGNAL_SERVER_PORT={self._signal_port}
@@ -320,30 +369,28 @@ exit /b %ERRORLEVEL%
         signal = signal_result.get("signal", "")
         to_state = signal_result.get("to_state", "")
 
-        if task_id.startswith("task_"):
-            task_id = task_id[5:]
-
         slot: GuardSlot | None = None
         should_finalize = False
+        normalized_task_id = task_id
         with self._lock:
             slot = self._slots.get(agent_id)
             if slot is None:
                 return
-            if not slot.busy:
+            if not slot.busy or slot.finalizing:
                 return
             if slot.assigned_task_id != task_id:
-                return
+                stripped_task_id = task_id[5:] if task_id.startswith("task_") else task_id
+                if slot.assigned_task_id != stripped_task_id:
+                    return
+                normalized_task_id = stripped_task_id
             if to_state:
                 slot.last_known_state = to_state
             should_finalize = signal in {"approved", "rejected"}
 
         if should_finalize and slot is not None:
-            self._finalize_slot_terminal(slot, signal=signal, task_id=task_id)
+            self._finalize_slot_terminal(slot, signal=signal, task_id=normalized_task_id)
 
-    def _cleanup_batch_field(self, task_id: str) -> None:
-        if not task_id.startswith("batch_"):
-            return
-
+    def _cleanup_project_field(self, task_id: str) -> None:
         field_dir = self._gate_fields_dir / task_id
         if field_dir.exists():
             try:
@@ -358,10 +405,17 @@ exit /b %ERRORLEVEL%
         signal: str,
         task_id: str,
     ) -> dict[str, Any]:
+        with self._lock:
+            if not slot.busy or slot.finalizing or slot.assigned_task_id != task_id:
+                return {"finalized": False, "reason": "slot_already_finalized"}
+            slot.finalizing = True
+            claimed_launch_result = slot.launch_result
+            slot.launch_result = None
+
         result = {"finalized": True, "slot_id": slot.slot_id, "task_id": task_id, "signal": signal}
 
-        if slot.launch_result is not None:
-            cleanup_result = self._launch_manager.cleanup_launch(slot.launch_result)
+        if claimed_launch_result is not None:
+            cleanup_result = self._launch_manager.cleanup_launch(claimed_launch_result)
             result["cleanup"] = cleanup_result
 
         if signal == "approved":
@@ -370,16 +424,36 @@ exit /b %ERRORLEVEL%
             result["artifacts"] = self.collect_artifacts_to_rejectbox(slot.slot_id, task_id)
 
         self._clean_slot_dir(slot)
-        self._cleanup_batch_field(task_id)
+        self._cleanup_project_field(task_id)
 
-        slot.busy = False
-        slot.assigned_task_id = ""
-        slot.launch_result = None
-        slot.assigned_at_epoch = 0.0
-        slot.timeout_seconds = 600
-        slot.last_known_state = "state_0"
+        with self._lock:
+            slot.busy = False
+            slot.finalizing = False
+            slot.assigned_task_id = ""
+            slot.launch_result = None
+            slot.assigned_at_epoch = 0.0
+            slot.timeout_seconds = 600
+            slot.last_known_state = "state_0"
 
         return result
+
+    def _sanitize_outbox_suffix(self, value: str) -> str:
+        sanitized = re.sub(r'[\\/:*?"<>|]', '_', value).strip()
+        sanitized = sanitized.rstrip(". ")
+        return sanitized or "task"
+
+    def _build_project_outbox_name(self, task_id: str, task_file: Path) -> str | None:
+        task_name = task_file.stem
+        match = re.search(r'(\d{3})$', task_name)
+        if not match:
+            return None
+        seq = match.group(1)
+
+        task_data = parse_task_file(task_file)
+        headers = task_data.get("headers", {})
+        raw_suffix = headers.get("TITLE") or f"task{int(seq)}"
+        suffix = self._sanitize_outbox_suffix(str(raw_suffix))
+        return f"{task_id}-{seq}-{suffix}.txt"
 
     def collect_artifacts_to_outbox(self, slot_id: str, task_id: str) -> dict[str, Any]:
         slot = self._slots.get(slot_id)
@@ -391,33 +465,41 @@ exit /b %ERRORLEVEL%
         self._outbox_dir.mkdir(parents=True, exist_ok=True)
 
         copied_files: list[str] = []
-        if task_id.startswith("batch_"):
-            out_dir = self._outbox_dir
+        from app.services.post_naming import is_valid_atomic_workorder, is_valid_project_key
+
+        task_files = sorted(slot.workspace_dir.glob("task_*.txt"))
+        if task_files and is_valid_project_key(task_id):
+            renamed_task_files = [
+                (task_file, self._build_project_outbox_name(task_id, task_file))
+                for task_file in task_files
+            ]
+            for task_file, outbox_name in renamed_task_files:
+                if outbox_name is None:
+                    continue
+                dst = self._outbox_dir / outbox_name
+                shutil.copy2(task_file, dst)
+                copied_files.append(outbox_name)
+        elif task_files and not is_valid_atomic_workorder(task_id):
+            for item in task_files:
+                dst = self._outbox_dir / item.name
+                shutil.copy2(item, dst)
+                copied_files.append(str(item.relative_to(slot.workspace_dir)))
         else:
             out_dir = self._outbox_dir / task_id
             out_dir.mkdir(parents=True, exist_ok=True)
-
-        for item in slot.workspace_dir.rglob("*"):
-            if not item.is_file():
-                continue
-
-            # Batch mode filtering: only collect valid work tasks (task_*.txt)
-            if task_id.startswith("batch_"):
-                if not item.name.startswith("task_") or not item.name.endswith(".txt"):
+            for item in slot.workspace_dir.rglob("*"):
+                if not item.is_file():
                     continue
-                dst = out_dir / item.name
-            else:
                 rel = item.relative_to(slot.workspace_dir)
                 dst = out_dir / rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
-
-            shutil.copy2(item, dst)
-            copied_files.append(str(item.relative_to(slot.workspace_dir)))
+                shutil.copy2(item, dst)
+                copied_files.append(str(rel))
 
         return {
             "collected": True,
             "task_id": task_id,
-            "outbox_dir": str(out_dir),
+            "outbox_dir": str(self._outbox_dir),
             "files": copied_files,
         }
 
@@ -499,7 +581,7 @@ exit /b %ERRORLEVEL%
             timed_out: list[dict[str, Any]] = []
 
             for slot in self._slots.values():
-                if not slot.busy or not slot.assigned_task_id:
+                if not slot.busy or slot.finalizing or not slot.assigned_task_id:
                     continue
                 if slot.assigned_at_epoch <= 0:
                     continue
@@ -508,19 +590,24 @@ exit /b %ERRORLEVEL%
 
                 task_id = slot.assigned_task_id
                 timeout_seconds = slot.timeout_seconds
+                claimed_launch_result = slot.launch_result
+                slot.finalizing = True
+                slot.launch_result = None
 
-                if slot.launch_result is not None:
-                    self._launch_manager.cleanup_launch(slot.launch_result)
+                if claimed_launch_result is not None:
+                    self._launch_manager.cleanup_launch(claimed_launch_result)
 
                 worker_task_file = slot.slot_dir / f"task_{task_id}.txt"
-                if worker_task_file.exists() and not task_id.startswith("batch_"):
+                field_dir = self._gate_fields_dir / task_id
+                if worker_task_file.exists() and not field_dir.exists():
                     requeued_file = self._queue_dir / worker_task_file.name
                     requeued_file.write_text(worker_task_file.read_text(encoding="utf-8"), encoding="utf-8")
 
                 self._clean_slot_dir(slot)
-                self._cleanup_batch_field(task_id)
+                self._cleanup_project_field(task_id)
 
                 slot.busy = False
+                slot.finalizing = False
                 slot.assigned_task_id = ""
                 slot.launch_result = None
                 slot.assigned_at_epoch = 0.0
@@ -553,6 +640,10 @@ exit /b %ERRORLEVEL%
             return self._resume()
         elif method == "GET" and path == "/api/control/state":
             return self._get_control_state()
+        elif method == "POST" and path == "/api/control/slot/offline":
+            return self._slot_offline(payload)
+        elif method == "POST" and path == "/api/control/slot/online":
+            return self._slot_online(payload)
         else:
             return {"error": "unknown endpoint"}
 
@@ -573,16 +664,43 @@ exit /b %ERRORLEVEL%
             "pool": "gate",
         }
 
+    def _slot_offline(self, payload: dict | None) -> dict[str, Any]:
+        if not payload or "slot_id" not in payload:
+            return {"success": False, "error": "slot_id required"}
+        slot_id = payload["slot_id"]
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return {"success": False, "error": f"slot not found: {slot_id}"}
+        with self._lock:
+            slot.enabled = False
+            self._governance_store.set_enabled("gate", slot_id, False)
+        return {"success": True, "pool": "gate", "slot_id": slot_id, "enabled": False, "busy": slot.busy}
+
+    def _slot_online(self, payload: dict | None) -> dict[str, Any]:
+        if not payload or "slot_id" not in payload:
+            return {"success": False, "error": "slot_id required"}
+        slot_id = payload["slot_id"]
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return {"success": False, "error": f"slot not found: {slot_id}"}
+        with self._lock:
+            slot.enabled = True
+            self._governance_store.set_enabled("gate", slot_id, True)
+        return {"success": True, "pool": "gate", "slot_id": slot_id, "enabled": True, "busy": slot.busy}
+
     def _get_status(self) -> dict[str, Any]:
         """Return current runtime status with pool info and slot states."""
         with self._lock:
             slots_data = []
             for slot_id in sorted(self._slots.keys()):
                 slot = self._slots[slot_id]
+                current_state = slot.last_known_state if slot.last_known_state != "state_0" else ("state_1" if slot.busy else "idle")
                 slots_data.append({
                     "slot_id": slot.slot_id,
                     "busy": slot.busy,
                     "assigned_task_id": slot.assigned_task_id,
+                    "current_state": current_state,
+                    "enabled": slot.enabled,
                 })
 
             queue_count = len(self.list_queue_tasks())

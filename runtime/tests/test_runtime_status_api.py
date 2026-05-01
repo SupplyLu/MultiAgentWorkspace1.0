@@ -3,11 +3,14 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from app.runtimes.work_runtime import WorkRuntime
 from app.runtimes.thinking_runtime import ThinkingRuntime
 from app.runtimes.construct_runtime import ConstructRuntime
 from app.runtimes.gate_runtime import GateRuntime
 from app.runtimes.post_runtime import PostRuntime
+from app.runtimes.package_runtime import PackageRuntime
 
 
 def test_work_runtime_status_api_returns_pool_and_slots(tmp_path):
@@ -45,6 +48,35 @@ def test_work_runtime_status_api_returns_pool_and_slots(tmp_path):
     assert "slot_id" in slot
     assert "busy" in slot
     assert "assigned_task_id" in slot
+    assert "current_state" in slot
+
+
+@pytest.mark.parametrize(
+    ("runtime_cls", "pool_name", "slot_prefix", "port"),
+    [
+        (ThinkingRuntime, "thinking", "sub_brain_", 18910),
+        (ConstructRuntime, "construct", "constructor_", 18920),
+        (GateRuntime, "gate", "guard_", 18930),
+    ],
+)
+def test_runtime_status_api_exposes_current_state_for_slot_based_pools(
+    tmp_path, runtime_cls, pool_name, slot_prefix, port
+):
+    root_dir = tmp_path / "test_root"
+    pool_dir = root_dir / "pools" / pool_name
+
+    for i in [1, 2]:
+        slot_dir = pool_dir / f"{slot_prefix}0{i}"
+        workspace = slot_dir / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+
+    runtime = runtime_cls(root_dir=root_dir, signal_port=port)
+    result = runtime.handle_api_request("GET", "/api/status", None)
+
+    assert result["pool"] == pool_name
+    assert result["signal_port"] == port
+    assert len(result["slots"]) == 2
+    assert "current_state" in result["slots"][0]
 
 
 def test_work_runtime_health_api_returns_ok_and_pool_info(tmp_path):
@@ -189,16 +221,66 @@ def test_gate_runtime_status_api_returns_pool_and_slots(tmp_path):
     assert len(result["slots"]) == 2
 
 
-def test_gate_runtime_health_api_returns_ok_and_pool_info(tmp_path):
-    """Test that gate runtime exposes GET /api/health with standard schema."""
-    root_dir = tmp_path / "test_root"
-    gate_pool = root_dir / "pools" / "gate"
-    gate_pool.mkdir(parents=True, exist_ok=True)
 
-    runtime = GateRuntime(root_dir=root_dir, signal_port=18931)
+
+def test_package_runtime_status_api_returns_slot_task_and_stage_details(tmp_path):
+    """Test that package runtime exposes slot task and stage details in GET /api/status."""
+    from app.runtimes.package_runtime import PackageTask
+
+    root_dir = tmp_path / "test_root"
+    package_pool = root_dir / "pools" / "package"
+
+    for slot_name in ["cutter_01", "tester_01", "releaser_01", "complete_player_01"]:
+        workspace = package_pool / slot_name / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+
+    runtime = PackageRuntime(root_dir=root_dir, signal_port=19300)
+
+    with runtime._lock:
+        slot = runtime._slots["cutter_01"]
+        slot.busy = True
+        slot.assigned_task_id = "pkg_task_1"
+        slot.assigned_project_name = "demo_project"
+        slot.last_known_state = "state_2"
+        runtime._tasks["pkg_task_1"] = PackageTask(
+            task_id="pkg_task_1",
+            project_name="demo_project",
+            project_root=root_dir / "pools" / "work" / "fields" / "demo_project",
+            original_task="test task",
+            context_dir=package_pool / "context" / "demo_project",
+            current_stage="cut",
+        )
+
+    result = runtime.handle_api_request("GET", "/api/status", None)
+
+    assert result["pool"] == "package"
+    assert result["signal_port"] == 19300
+    assert result["is_running"] is False
+    assert result["queue_count"] == 0
+    assert len(result["slots"]) == 4
+
+    slot_result = result["slots"][0]
+    assert "slot_id" in slot_result
+    assert "busy" in slot_result
+    assert "assigned_task_id" in slot_result
+    assert "assigned_project_name" in slot_result
+    assert "current_state" in slot_result
+    assert "current_stage" in slot_result
+
+    cutter_slot = next(slot for slot in result["slots"] if slot["slot_id"] == "cutter_01")
+    assert cutter_slot["busy"] is True
+    assert cutter_slot["assigned_task_id"] == "pkg_task_1"
+    assert cutter_slot["assigned_project_name"] == "demo_project"
+    assert cutter_slot["current_state"] == "state_2"
+    assert cutter_slot["current_stage"] == "cut"
+
+
+def test_package_runtime_health_api_returns_ok_and_pool_info(tmp_path):
+    """Test that package runtime exposes GET /api/health with standard schema."""
+    runtime = PackageRuntime(root_dir=tmp_path, signal_port=19301)
 
     result = runtime.handle_api_request("GET", "/api/health", None)
 
     assert result["ok"] is True
-    assert result["pool"] == "gate"
+    assert result["pool"] == "package"
     assert "uptime_seconds" in result

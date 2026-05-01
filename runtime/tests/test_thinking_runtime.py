@@ -125,8 +125,7 @@ def test_dispatch_next_copies_task_to_slot_and_marks_busy(tmp_path):
     task_file = queue_dir / "task_001.txt"
     task_content = """FROM: runtime
 TO: sub_brain_01
-TASK_ID: t_001
-FEATURE_ID: feature_analysis
+PROJECT_KEY: SignalBridge-v1-Build
 
 Please analyze the requirements.
 """
@@ -159,7 +158,7 @@ Please analyze the requirements.
         # Verify result
         assert result["dispatched"] is True
         assert result["slot_id"] == "sub_brain_01"
-        assert result["task_id"] == "t_001"
+        assert result["task_id"] == "SignalBridge-v1-Build"
         assert "task_file" in result
         assert "worker_task_file" in result
         assert result["launch"] == fake_launch_result
@@ -176,14 +175,14 @@ Please analyze the requirements.
         slot = runtime.get_slot("sub_brain_01")
         assert slot is not None
         assert slot.busy is True
-        assert slot.assigned_task_id == "t_001"
+        assert slot.assigned_task_id == "SignalBridge-v1-Build"
 
         # Verify launch bat file was created
         launch_bat = slot1_dir / "launch_sub_brain_01.bat"
         assert launch_bat.exists()
         bat_content = launch_bat.read_text(encoding="utf-8")
         assert "sub_brain_01" in bat_content
-        assert "t_001" in bat_content
+        assert "SignalBridge-v1-Build" in bat_content
         assert "POOL=thinking" in bat_content
 
     finally:
@@ -205,7 +204,7 @@ def test_dispatch_next_returns_no_idle_slot_when_all_busy(tmp_path):
 
     # Create a task file
     task_file = queue_dir / "task_001.txt"
-    task_file.write_text("TASK_ID: t_001\n\ntask body")
+    task_file.write_text("PROJECT_KEY: SignalBridge-v1-Build\n\ntask body")
 
     runtime = ThinkingRuntime(root_dir=tmp_path, signal_port=19005)
 
@@ -238,12 +237,12 @@ def test_handle_signal_releases_slot_on_done(tmp_path):
     slot1 = runtime.get_slot("sub_brain_01")
     if slot1:
         slot1.busy = True
-        slot1.assigned_task_id = "t_001"
+        slot1.assigned_task_id = "SignalBridge-v1-Build"
 
     # Send a done signal
     signal_result = {
         "agent_id": "sub_brain_01",
-        "task_id": "t_001",
+        "task_id": "SignalBridge-v1-Build",
         "signal": "done",
         "is_terminal": True,
     }
@@ -270,12 +269,12 @@ def test_handle_signal_releases_slot_on_failed(tmp_path):
     slot1 = runtime.get_slot("sub_brain_01")
     if slot1:
         slot1.busy = True
-        slot1.assigned_task_id = "t_002"
+        slot1.assigned_task_id = "SignalBridge-v2-Build"
 
     # Send a failed signal
     signal_result = {
         "agent_id": "sub_brain_01",
-        "task_id": "t_002",
+        "task_id": "SignalBridge-v2-Build",
         "signal": "failed",
         "is_terminal": True,
     }
@@ -302,12 +301,12 @@ def test_handle_signal_releases_slot_on_blocked(tmp_path):
     slot1 = runtime.get_slot("sub_brain_01")
     if slot1:
         slot1.busy = True
-        slot1.assigned_task_id = "t_003"
+        slot1.assigned_task_id = "SignalBridge-v3-Build"
 
     # Send a blocked signal
     signal_result = {
         "agent_id": "sub_brain_01",
-        "task_id": "t_003",
+        "task_id": "SignalBridge-v3-Build",
         "signal": "blocked",
         "is_terminal": True,
     }
@@ -370,7 +369,7 @@ def test_dispatch_next_clears_workspace_before_task(tmp_path):
 
     # Create task
     task_file = queue_dir / "task_new.txt"
-    task_file.write_text("TASK_ID: t_new\nFEATURE_ID: f_new\n\nFRESH TASK", encoding="utf-8")
+    task_file.write_text("PROJECT_KEY: SignalBridge-v1-Build\n\nFRESH TASK", encoding="utf-8")
 
     runtime = ThinkingRuntime(root_dir=tmp_path, signal_port=19010)
 
@@ -409,7 +408,7 @@ def test_dispatch_next_rolls_back_when_deploy_fails(tmp_path):
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     task_file = queue_dir / "task_rollback.txt"
-    task_content = "TASK_ID: t_rollback\nFEATURE_ID: f_rb\n\nbody"
+    task_content = "PROJECT_KEY: SignalBridge-v1-Rollback\n\nbody"
     task_file.write_text(task_content, encoding="utf-8")
 
     runtime = ThinkingRuntime(root_dir=tmp_path, signal_port=19011)
@@ -454,7 +453,7 @@ def test_dispatch_next_rolls_back_when_launch_fails(tmp_path):
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     task_file = queue_dir / "task_launch_fail.txt"
-    task_content = "TASK_ID: t_launch_fail\nFEATURE_ID: f_launch\n\nbody"
+    task_content = "PROJECT_KEY: SignalBridge-v1-Launch\n\nbody"
     task_file.write_text(task_content, encoding="utf-8")
 
     runtime = ThinkingRuntime(root_dir=tmp_path, signal_port=19012)
@@ -499,7 +498,7 @@ def test_check_timeouts_kills_and_releases_expired_slots(tmp_path):
     slot = runtime.get_slot("sub_brain_01")
     assert slot is not None
     slot.busy = True
-    slot.assigned_task_id = "t_timeout"
+    slot.assigned_task_id = "SignalBridge-v1-Timeout"
     slot.assigned_at_epoch = time.time() - 400  # Expired (300s timeout)
     slot.timeout_seconds = 300
     slot.launch_result = {"launched": True, "job_handle": 0xBEEF}
@@ -510,7 +509,7 @@ def test_check_timeouts_kills_and_releases_expired_slots(tmp_path):
     # Verify timeout detected
     assert len(timed_out) == 1
     assert timed_out[0]["slot_id"] == "sub_brain_01"
-    assert timed_out[0]["task_id"] == "t_timeout"
+    assert timed_out[0]["task_id"] == "SignalBridge-v1-Timeout"
     assert timed_out[0]["timeout_seconds"] == 300
 
     # Verify slot released
@@ -536,12 +535,12 @@ def test_collect_artifacts_to_outbox(tmp_path):
 
     runtime = ThinkingRuntime(root_dir=tmp_path, signal_port=19014)
 
-    result = runtime.collect_artifacts_to_outbox("sub_brain_01", "t_collect")
+    result = runtime.collect_artifacts_to_outbox("sub_brain_01", "SignalBridge-v1-Collect")
 
     assert result["collected"] is True
-    assert result["task_id"] == "t_collect"
+    assert result["task_id"] == "SignalBridge-v1-Collect"
     assert len(result["files"]) == 2
 
     # Verify files copied to Outbox
-    assert (outbox_dir / "t_collect" / "result.txt").exists()
-    assert (outbox_dir / "t_collect" / "subdir" / "detail.txt").exists()
+    assert (outbox_dir / "SignalBridge-v1-Collect" / "result.txt").exists()
+    assert (outbox_dir / "SignalBridge-v1-Collect" / "subdir" / "detail.txt").exists()

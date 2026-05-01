@@ -10,8 +10,8 @@
 - 读取 Thinking Outbox 的拆解结果（方向性任务）
 - 为每个原子任务补全强约束（路径、变量名、接口定义）
 - 在 pools/work/fields/ 创建或识别项目根
-- 将强约束任务逐个写入 Work Pool Queue
-- 收集产物到 Construct Outbox
+- 在 workspace/ 中生成规划与工单产物，并由 Runtime 收口到 Construct Outbox
+- 由 POST Runtime 继续扫描 Construct Outbox 推进到 Gate
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import threading
 import fnmatch
 
 from app.services.signal_server import RuntimeSignalServer
+from app.services.slot_governance_store import SlotGovernanceStore
 from app.shared.launch_manager import LaunchManager, LaunchRequest
 from app.shared.shutdown_manager import ShutdownManager
 from app.shared.file_queue import parse_task_file
@@ -64,10 +65,10 @@ def _validate_id(value: str, field_name: str) -> str:
     """
     if not value:
         raise ValueError(f"{field_name} cannot be empty")
-    if not re.match(r'^[a-zA-Z0-9_-]+$', value):
+    if not re.match(r'^[a-zA-Z0-9_.-]+$', value):
         raise ValueError(
             f"{field_name} contains invalid characters: {value!r}. "
-            "Only alphanumeric, underscore, and hyphen are allowed."
+            "Only alphanumeric, dot, underscore, and hyphen are allowed."
         )
     return value
 
@@ -82,8 +83,9 @@ class ConstructorSlot:
     assigned_task_id: str = ""
     launch_result: dict[str, Any] | None = None
     assigned_at_epoch: float = 0.0
-    timeout_seconds: int = 1200
+    timeout_seconds: int = 1800
     last_known_state: str = "state_0"
+    enabled: bool = True
 
 
 class ConstructRuntime:
@@ -110,6 +112,7 @@ class ConstructRuntime:
 
         # Dynamic slot discovery: scan constructor_*
         self._slots: dict[str, ConstructorSlot] = {}
+        self._governance_store = SlotGovernanceStore(root_dir=self._root_dir)
         self._init_slots()
 
         # Signal server - 每个 Runtime 有自己的独立实例
@@ -146,6 +149,7 @@ class ConstructRuntime:
             workspace_dir = slot_dir / "workspace"
             if not workspace_dir.exists() or not workspace_dir.is_dir():
                 continue
+            enabled = self._governance_store.is_enabled("construct", slot_id)
             self._slots[slot_id] = ConstructorSlot(
                 slot_id=slot_id,
                 slot_dir=slot_dir,
@@ -153,31 +157,31 @@ class ConstructRuntime:
                 busy=False,
                 assigned_task_id="",
                 launch_result=None,
+                enabled=enabled,
             )
 
-    def _extract_batch_id(self, folder: Path) -> str:
-        """Extract BATCH_ID from folder's summary.txt, fallback to folder name."""
+    def _extract_project_key(self, folder: Path) -> str:
+        """Extract PROJECT_KEY from folder's summary.txt, fallback to folder name."""
         summary_file = folder / "summary.txt"
         if summary_file.exists() and summary_file.is_file():
             try:
                 content = summary_file.read_text(encoding="utf-8")
                 for line in content.splitlines():
-                    if line.startswith("BATCH_ID:"):
-                        batch_id = line.split(":", 1)[1].strip()
-                        if batch_id:
-                            return batch_id
+                    if line.startswith("PROJECT_KEY:"):
+                        project_key = line.split(":", 1)[1].strip()
+                        if project_key:
+                            return project_key
             except (OSError, UnicodeDecodeError):
                 pass
         # Fallback: use folder name
         return folder.name
 
-    def _build_batch_task_txt(self, batch_id: str, field_dir: Path) -> str:
-        """Build the reference txt content for a batch task."""
+    def _build_project_task_txt(self, project_key: str, field_dir: Path) -> str:
+        """Build the reference txt content for a project task."""
         return f"""FROM: thinking_pool
 TO: constructor_01
-TASK_ID: {batch_id}
-FEATURE_ID: {batch_id}
-TIMEOUT: 1200
+PROJECT_KEY: {project_key}
+TIMEOUT: 1800
 INPUT_MODE: batch_dir
 BATCH_FIELD: {str(field_dir).replace(chr(92), '/')}
 PROJECT_ROOT: {str(self._work_queue_dir.parent / "fields").replace(chr(92), '/')}
@@ -216,8 +220,8 @@ Analyze and generate strong-constrained work tasks for Work Pool:
             if item.name.startswith("."):
                 continue
 
-            batch_id = self._extract_batch_id(item)
-            field_dir = self._construct_fields_dir / batch_id
+            project_key = self._extract_project_key(item)
+            field_dir = self._construct_fields_dir / project_key
             input_dir = field_dir / "input"
             input_dir.mkdir(parents=True, exist_ok=True)
 
@@ -241,10 +245,10 @@ Analyze and generate strong-constrained work tasks for Work Pool:
                 pass
 
             # Generate reference txt
-            ref_txt = self._queue_dir / f"task_{batch_id}.txt"
+            ref_txt = self._queue_dir / f"task_{project_key}.txt"
             if not ref_txt.exists():
                 ref_txt.write_text(
-                    self._build_batch_task_txt(batch_id, field_dir),
+                    self._build_project_task_txt(project_key, field_dir),
                     encoding="utf-8"
                 )
 
@@ -253,7 +257,7 @@ Analyze and generate strong-constrained work tasks for Work Pool:
             meta_dir.mkdir(parents=True, exist_ok=True)
             (meta_dir / "batch_info.json").write_text(
                 json.dumps({
-                    "batch_id": batch_id,
+                    "batch_id": project_key,
                     "field_dir": str(field_dir),
                     "created_at": datetime.now().isoformat(),
                 }, indent=2),
@@ -294,14 +298,14 @@ Analyze and generate strong-constrained work tasks for Work Pool:
         (slot.slot_dir / "CONSTRUCT_BOOTSTRAP.txt").write_bytes(bootstrap_src.read_bytes())
 
     def _parse_timeout_seconds(self, headers: dict[str, Any]) -> int:
-        """Parse TIMEOUT header safely with 20-minute default."""
-        raw_timeout = headers.get("TIMEOUT", 1200)
+        """Parse TIMEOUT header safely with 30-minute default."""
+        raw_timeout = headers.get("TIMEOUT", 1800)
         try:
             timeout_seconds = int(raw_timeout)
         except (TypeError, ValueError):
-            return 1200
+            return 1800
         if timeout_seconds <= 0:
-            return 1200
+            return 1800
         return timeout_seconds
 
     def get_next_idle_slot(self) -> ConstructorSlot | None:
@@ -310,7 +314,7 @@ Analyze and generate strong-constrained work tasks for Work Pool:
             slot_ids = sorted(self._slots.keys())
             for slot_id in slot_ids:
                 slot = self._slots[slot_id]
-                if not slot.busy and not slot.finalizing:
+                if slot.enabled and not slot.busy and not slot.finalizing:
                     return slot
             return None
 
@@ -380,7 +384,7 @@ Analyze and generate strong-constrained work tasks for Work Pool:
             slot_ids = sorted(self._slots.keys())
             for slot_id in slot_ids:
                 candidate = self._slots[slot_id]
-                if not candidate.busy and not candidate.finalizing:
+                if candidate.enabled and not candidate.busy and not candidate.finalizing:
                     candidate.busy = True
                     slot = candidate
                     break
@@ -405,19 +409,32 @@ Analyze and generate strong-constrained work tasks for Work Pool:
                 return {"dispatched": False, "error": "No tasks in queue"}
             return {"dispatched": False, "error": "No idle slot available"}
 
+        original_name = task_file.name[:-11] if task_file.name.endswith(".processing") else task_file.name
+        try:
+            raw_content = task_file.read_text(encoding="utf-8")
+        except OSError:
+            raw_content = ""
+
         # Parse task file to get headers
         task_data = parse_task_file(task_file)
+        if task_data is None:
+            self._rollback_dispatch(slot, task_file, original_name, raw_content)
+            return {"dispatched": False, "error": "Failed to parse task file (invalid or disappeared)"}
         headers = task_data.get("headers") or task_data.get("header") or {}
-        task_id = headers.get("TASK_ID", "")
-        feature_id = headers.get("FEATURE_ID", "")
+        project_key = headers.get("PROJECT_KEY", "")
+        # Support legacy TASK_ID fallback for backward compatibility with existing tasks
+        if not project_key:
+            project_key = headers.get("TASK_ID", "")
+        if not project_key:
+            self._rollback_dispatch(slot, task_file, original_name, raw_content)
+            return {"dispatched": False, "error": "PROJECT_KEY is required"}
+        task_id = project_key
         timeout_seconds = self._parse_timeout_seconds(headers)
-        raw_content = task_data.get("raw", "")
-        original_name = task_file.name[:-11] if task_file.name.endswith(".processing") else task_file.name
+        raw_content = task_data.get("raw", raw_content)
 
         # Validate IDs
         try:
             task_id = _validate_id(task_id, "TASK_ID")
-            feature_id = _validate_id(feature_id, "FEATURE_ID")
         except ValueError as e:
             self._rollback_dispatch(slot, task_file, original_name, raw_content)
             return {"dispatched": False, "error": f"ID validation failed: {e}"}
@@ -443,15 +460,14 @@ Analyze and generate strong-constrained work tasks for Work Pool:
         worker_task_file = slot.slot_dir / original_name
         worker_task_file.write_text(raw_content, encoding="utf-8")
 
-        batch_field_header = headers.get("BATCH_FIELD", "")
+        controlled_batch_field_dir = self._construct_fields_dir / task_id
         workspace_batch_dir: Path | None = None
-        if batch_field_header:
-            batch_field_dir = Path(str(batch_field_header))
-            if batch_field_dir.exists() and batch_field_dir.is_dir():
-                workspace_batch_dir = workspace_dir / batch_field_dir.name
-                if workspace_batch_dir.exists():
-                    shutil.rmtree(workspace_batch_dir)
-                shutil.copytree(batch_field_dir / "input", workspace_batch_dir)
+        controlled_input_dir = controlled_batch_field_dir / "input"
+        if controlled_input_dir.exists() and controlled_input_dir.is_dir():
+            workspace_batch_dir = workspace_dir / controlled_batch_field_dir.name
+            if workspace_batch_dir.exists():
+                shutil.rmtree(workspace_batch_dir)
+            shutil.copytree(controlled_input_dir, workspace_batch_dir)
 
         try:
             # Deploy lifecycle bats
@@ -464,8 +480,8 @@ REM Pool: construct
 
 set "AGENT_ID={_escape_bat_var(slot.slot_id)}"
 set "TASK_ID={_escape_bat_var(task_id)}"
+set "PROJECT_KEY={_escape_bat_var(task_id)}"
 set "ROLE=constructor"
-set "FEATURE_ID={_escape_bat_var(feature_id)}"
 set "POOL=construct"
 set "SIGNAL_SERVER_PORT={self._signal_port}"
 
@@ -713,11 +729,19 @@ exit /b %ERRORLEVEL%
         out_dir = self._outbox_dir / task_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        source_root = slot.workspace_dir
+        workspace_items = list(slot.workspace_dir.iterdir())
+        workspace_files = [item for item in workspace_items if item.is_file()]
+        workspace_dirs = [item for item in workspace_items if item.is_dir()]
+
+        if not workspace_files and len(workspace_dirs) == 1 and workspace_dirs[0].name == task_id:
+            source_root = workspace_dirs[0]
+
         copied_files: list[str] = []
-        for item in slot.workspace_dir.rglob("*"):
+        for item in source_root.rglob("*"):
             if not item.is_file():
                 continue
-            rel = item.relative_to(slot.workspace_dir)
+            rel = item.relative_to(source_root)
             dst = out_dir / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item, dst)
@@ -750,6 +774,10 @@ exit /b %ERRORLEVEL%
             return self._resume()
         elif method == "GET" and path == "/api/control/state":
             return self._get_control_state()
+        elif method == "POST" and path == "/api/control/slot/offline":
+            return self._slot_offline(payload)
+        elif method == "POST" and path == "/api/control/slot/online":
+            return self._slot_online(payload)
         else:
             return {"error": "unknown endpoint"}
 
@@ -770,16 +798,43 @@ exit /b %ERRORLEVEL%
             "pool": "construct",
         }
 
+    def _slot_offline(self, payload: dict | None) -> dict[str, Any]:
+        if not payload or "slot_id" not in payload:
+            return {"success": False, "error": "slot_id required"}
+        slot_id = payload["slot_id"]
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return {"success": False, "error": f"slot not found: {slot_id}"}
+        with self._lock:
+            slot.enabled = False
+            self._governance_store.set_enabled("construct", slot_id, False)
+        return {"success": True, "pool": "construct", "slot_id": slot_id, "enabled": False, "busy": slot.busy}
+
+    def _slot_online(self, payload: dict | None) -> dict[str, Any]:
+        if not payload or "slot_id" not in payload:
+            return {"success": False, "error": "slot_id required"}
+        slot_id = payload["slot_id"]
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return {"success": False, "error": f"slot not found: {slot_id}"}
+        with self._lock:
+            slot.enabled = True
+            self._governance_store.set_enabled("construct", slot_id, True)
+        return {"success": True, "pool": "construct", "slot_id": slot_id, "enabled": True, "busy": slot.busy}
+
     def _get_status(self) -> dict[str, Any]:
         """Return current runtime status with pool info and slot states."""
         with self._lock:
             slots_data = []
             for slot_id in sorted(self._slots.keys()):
                 slot = self._slots[slot_id]
+                current_state = slot.last_known_state if slot.last_known_state != "state_0" else ("state_1" if slot.busy else "idle")
                 slots_data.append({
                     "slot_id": slot.slot_id,
                     "busy": slot.busy,
                     "assigned_task_id": slot.assigned_task_id,
+                    "current_state": current_state,
+                    "enabled": slot.enabled,
                 })
 
             queue_count = len(self.list_queue_tasks())

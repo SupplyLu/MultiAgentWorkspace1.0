@@ -28,8 +28,8 @@ def main():
             {
                 "error": (
                     "Invalid project_key format: "
-                    f"{args.project_key}. Expected format: XXX-(Vision)-(Mode), "
-                    "e.g., SignalOfBridge-v1-Build"
+                    f"{args.project_key}. Expected format: ProjectName-Version-Mode, "
+                    "e.g., SignalBridge-v1-Build, SignalBridge-2.0.1-Demo"
                 )
             }
         )

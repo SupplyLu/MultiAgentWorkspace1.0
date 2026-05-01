@@ -2,19 +2,20 @@
 POST naming validation rules.
 
 Enforces strict naming conventions for POST registration:
-- Project key format: XXX-(Vision)-(Mode) (e.g., SignalOfBridge-v1-Build)
-- Atomic workorder format: XXX-(Vision)-(Mode)-NNN (e.g., SignalOfBridge-v1-Build-001)
+- Project key format: ProjectName-Version-Mode (e.g., SignalBridge-v1-Build, SignalBridge-2.0.1-Demo)
+- Atomic workorder format: {ProjectKey}-{SubTaskName}{Seq} (e.g., SignalBridge-v1-Build-UIupgrade001)
 """
 
 import re
 
-_PROJECT_KEY_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9]*-v\d+-[A-Za-z][A-Za-z0-9]*$")
-_ATOMIC_WORKORDER_PATTERN = re.compile(r"^([A-Za-z][A-Za-z0-9]*-v\d+-[A-Za-z][A-Za-z0-9]*)-(\d{3})$")
+_VERSION_PATTERN = r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*"
+_PROJECT_KEY_PATTERN = re.compile(rf"^[A-Za-z][A-Za-z0-9]*-{_VERSION_PATTERN}-[A-Za-z][A-Za-z0-9]*$")
+_ATOMIC_WORKORDER_PATTERN = re.compile(rf"^([A-Za-z][A-Za-z0-9]*-{_VERSION_PATTERN}-[A-Za-z][A-Za-z0-9]*)-([A-Za-z][A-Za-z0-9]*)(\d+)$")
 
 
 def is_valid_project_key(name: str) -> bool:
     """
-    Validate project key format: XXX-(Vision)-(Mode).
+    Validate project key format: ProjectName-Version-Mode.
 
     Args:
         name: The project key to validate
@@ -27,7 +28,7 @@ def is_valid_project_key(name: str) -> bool:
 
 def is_valid_atomic_workorder(name: str) -> bool:
     """
-    Validate atomic workorder format: XXX-(Vision)-(Mode)-NNN.
+    Validate atomic workorder format: {ProjectKey}-{SubTaskName}{Seq}.
 
     Args:
         name: The atomic workorder to validate

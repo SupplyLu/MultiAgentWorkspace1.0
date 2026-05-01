@@ -168,7 +168,7 @@ def test_callback_exception_returns_json_500(tmp_path):
             content_type = exc.headers["Content-Type"]
             result = json.loads(exc.read().decode("utf-8"))
 
-        assert result["reason"] == "internal server error"
+        assert result["reason"] == "api handler failed"
         assert result["error"] == "handler failure"
         assert "application/json" in content_type
 

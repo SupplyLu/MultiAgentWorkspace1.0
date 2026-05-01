@@ -4,6 +4,9 @@
 # Windows process management (Job Object)
 pywin32==311
 
+# Cross-process file locking
+filelock==3.24.3
+
 # Testing framework
 pytest==9.0.2
 pytest-asyncio==1.3.0

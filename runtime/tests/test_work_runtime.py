@@ -97,8 +97,7 @@ def test_dispatch_next_copies_task_to_worker_slot_and_marks_busy(tmp_path):
     task_file = queue_dir / "task_001.txt"
     task_content = """FROM: runtime
 TO: worker_01
-TASK_ID: t_001
-FEATURE_ID: feature_login
+PROJECT_KEY: SignalBridge-v1-Build
 
 Please implement the login page.
 """
@@ -131,7 +130,7 @@ Please implement the login page.
         # Verify result
         assert result["dispatched"] is True
         assert result["slot_id"] == "worker_01"
-        assert result["task_id"] == "t_001"
+        assert result["task_id"] == "SignalBridge-v1-Build"
         assert "task_file" in result
         assert "worker_task_file" in result
         assert result["launch"] == fake_launch_result
@@ -148,14 +147,14 @@ Please implement the login page.
         slot = runtime.get_slot("worker_01")
         assert slot is not None
         assert slot.busy is True
-        assert slot.assigned_task_id == "t_001"
+        assert slot.assigned_task_id == "SignalBridge-v1-Build"
 
         # Verify launch bat file was created
         launch_bat = worker1_dir / "launch_worker_01.bat"
         assert launch_bat.exists()
         bat_content = launch_bat.read_text(encoding="utf-8")
         assert "worker_01" in bat_content
-        assert "t_001" in bat_content
+        assert "SignalBridge-v1-Build" in bat_content
 
     finally:
         lm_module.LaunchManager.launch = original_launch
@@ -178,7 +177,7 @@ def test_dispatch_next_handles_invalid_timeout_safely(tmp_path):
 
     task_file = queue_dir / "task_invalid_timeout.txt"
     task_file.write_text(
-        "TASK_ID: t_invalid_timeout\nTIMEOUT: foo\n\nbody",
+        "PROJECT_KEY: SignalBridge-v1-Build\nTIMEOUT: foo\n\nbody",
         encoding="utf-8",
     )
 
@@ -196,7 +195,7 @@ def test_dispatch_next_handles_invalid_timeout_safely(tmp_path):
         result = runtime.dispatch_next(dry_run=True)
 
         assert result["dispatched"] is True
-        assert result["task_id"] == "t_invalid_timeout"
+        assert result["task_id"] == "SignalBridge-v1-Build"
 
         slot = runtime.get_slot("worker_01")
         assert slot is not None
@@ -222,7 +221,7 @@ def test_dispatch_next_supports_legacy_header_key_shape(tmp_path):
 
 
     task_file = queue_dir / "task_legacy.txt"
-    task_file.write_text("TASK_ID: t_legacy\nFEATURE_ID: f_legacy\n\nlegacy body")
+    task_file.write_text("PROJECT_KEY: SignalBridge-v1-Build\n\nlegacy body")
 
     runtime = WorkRuntime(root_dir=tmp_path, signal_port=187731)
 
@@ -231,9 +230,9 @@ def test_dispatch_next_supports_legacy_header_key_shape(tmp_path):
 
     def mock_parse_task_file(_path):
         return {
-            "header": {"TASK_ID": "t_legacy", "FEATURE_ID": "f_legacy"},
+            "header": {"PROJECT_KEY": "SignalBridge-v1-Build"},
             "body": "legacy body",
-            "raw": "TASK_ID: t_legacy\nFEATURE_ID: f_legacy\n\nlegacy body",
+            "raw": "PROJECT_KEY: SignalBridge-v1-Build\n\nlegacy body",
         }
 
     wr_module.parse_task_file = mock_parse_task_file
@@ -256,7 +255,7 @@ def test_dispatch_next_supports_legacy_header_key_shape(tmp_path):
     try:
         result = runtime.dispatch_next(dry_run=True)
         assert result["dispatched"] is True
-        assert result["task_id"] == "t_legacy"
+        assert result["task_id"] == "SignalBridge-v1-Build"
     finally:
         wr_module.parse_task_file = original_parse
         lm_module.LaunchManager.launch = original_launch
@@ -283,7 +282,7 @@ def test_dispatch_next_returns_no_idle_slot_when_all_busy(tmp_path):
 
     # Create a task file
     task_file = queue_dir / "task_001.txt"
-    task_file.write_text("TASK_ID: t_001\n\ntask body")
+    task_file.write_text("PROJECT_KEY: SignalBridge-v1-Build\n\ntask body")
 
     runtime = WorkRuntime(root_dir=tmp_path, signal_port=18773)
 
@@ -617,7 +616,7 @@ def test_launch_bat_does_not_call_online_bat(tmp_path):
 
 
     task_file = queue_dir / "task_001.txt"
-    task_file.write_text("TASK_ID: t_nocall\nFEATURE_ID: f_test\n\ntask body", encoding="utf-8")
+    task_file.write_text("PROJECT_KEY: SignalBridge-v1-Nocall\n\ntask body", encoding="utf-8")
 
     runtime = WorkRuntime(root_dir=tmp_path, signal_port=18783)
 
@@ -698,7 +697,7 @@ def test_dispatch_next_clears_stale_task_files_from_slot_before_copying(tmp_path
 
     # Put a NEW task in the Queue
     task_file = queue_dir / "task_new_002.txt"
-    task_file.write_text("TASK_ID: t_002\n\nFRESH CONTENT", encoding="utf-8")
+    task_file.write_text("PROJECT_KEY: SignalBridge-v2-Build\n\nFRESH CONTENT", encoding="utf-8")
 
     runtime = WorkRuntime(root_dir=tmp_path, signal_port=18774)
 
@@ -740,7 +739,7 @@ def test_dispatch_next_rolls_back_when_deploy_lifecycle_bats_fails(tmp_path):
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     task_file = queue_dir / "task_rollback_001.txt"
-    task_content = "TASK_ID: t_rollback_001\nFEATURE_ID: f_rb\n\nbody"
+    task_content = "PROJECT_KEY: SignalBridge-v1-Rollback\n\nbody"
     task_file.write_text(task_content, encoding="utf-8")
 
     runtime = WorkRuntime(root_dir=tmp_path, signal_port=18784)
@@ -786,7 +785,7 @@ def test_dispatch_next_rolls_back_when_launch_fails(tmp_path):
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     task_file = queue_dir / "task_launch_fail_001.txt"
-    task_content = "TASK_ID: t_launch_fail_001\nFEATURE_ID: f_launch\n\nbody"
+    task_content = "PROJECT_KEY: SignalBridge-v1-Launch\n\nbody"
     task_file.write_text(task_content, encoding="utf-8")
 
     runtime = WorkRuntime(root_dir=tmp_path, signal_port=18785)
@@ -846,35 +845,271 @@ def test_workspace_isolation_prevents_artifact_leak_between_tasks(tmp_path):
     try:
         # Task A completes and leaves artifact in workspace
         queue_a = tmp_path / "pools" / "work" / "Queue" / "task_a.txt"
-        queue_a.write_text("TASK_ID: t_a\n\nTask A", encoding="utf-8")
+        queue_a.write_text("PROJECT_KEY: SignalBridge-v1-TaskA\n\nTask A", encoding="utf-8")
         runtime.dispatch_next(dry_run=True)
         (workspace_dir / "artifact_a.txt").write_text("artifact A", encoding="utf-8")
         runtime.handle_signal({
             "agent_id": "worker_01",
-            "task_id": "t_a",
+            "task_id": "SignalBridge-v1-TaskA",
             "signal": "done",
             "is_terminal": True,
         })
-        assert (outbox_dir / "t_a" / "artifact_a.txt").exists()
+        assert (outbox_dir / "SignalBridge-v1-TaskA" / "artifact_a.txt").exists()
 
         # Simulate leftover artifact reappearing before task B dispatch
         (workspace_dir / "artifact_a.txt").write_text("stale artifact A", encoding="utf-8")
 
         # Task B dispatch should clear workspace before execution
         queue_b = tmp_path / "pools" / "work" / "Queue" / "task_b.txt"
-        queue_b.write_text("TASK_ID: t_b\n\nTask B", encoding="utf-8")
+        queue_b.write_text("PROJECT_KEY: SignalBridge-v1-TaskB\n\nTask B", encoding="utf-8")
         runtime.dispatch_next(dry_run=True)
         assert not (workspace_dir / "artifact_a.txt").exists(), "workspace should be cleared before task B starts"
 
         (workspace_dir / "artifact_b.txt").write_text("artifact B", encoding="utf-8")
         runtime.handle_signal({
             "agent_id": "worker_01",
-            "task_id": "t_b",
+            "task_id": "SignalBridge-v1-TaskB",
             "signal": "done",
             "is_terminal": True,
         })
 
-        assert (outbox_dir / "t_b" / "artifact_b.txt").exists()
-        assert not (outbox_dir / "t_b" / "artifact_a.txt").exists(), "task B outbox must not contain task A leftovers"
+        assert (outbox_dir / "SignalBridge-v1-TaskB" / "artifact_b.txt").exists()
+        assert not (outbox_dir / "SignalBridge-v1-TaskB" / "artifact_a.txt").exists(), "task B outbox must not contain task A leftovers"
     finally:
         lm_module.LaunchManager.launch = original_launch
+
+
+def test_resolve_project_execution_context_default_legacy(tmp_path):
+    """Test that PROJECT_MODE defaults to legacy when not specified."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18787)
+
+    mode, root = runtime._resolve_project_execution_context({})
+    assert mode == "legacy"
+    assert root is None
+
+
+def test_resolve_project_execution_context_explicit_values(tmp_path):
+    """Test that PROJECT_MODE accepts all supported values."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18788)
+
+    mode, root = runtime._resolve_project_execution_context({"PROJECT_MODE": "legacy"})
+    assert mode == "legacy"
+    assert root is None
+
+    mode, root = runtime._resolve_project_execution_context({"PROJECT_MODE": "free"})
+    assert mode == "free"
+    assert root is None
+
+
+def test_resolve_project_execution_context_invalid_value(tmp_path):
+    """Test that invalid PROJECT_MODE raises ValueError."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18789)
+
+    with pytest.raises(ValueError, match="Invalid PROJECT_MODE"):
+        runtime._resolve_project_execution_context({"PROJECT_MODE": "invalid"})
+
+
+def test_resolve_project_execution_context_standard_valid(tmp_path):
+    """Test that standard mode with valid PROJECT_ROOT succeeds."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18790)
+
+    project_root = tmp_path / "test_project"
+    project_root.mkdir()
+
+    mode, root = runtime._resolve_project_execution_context({
+        "PROJECT_MODE": "standard",
+        "PROJECT_ROOT": str(project_root)
+    })
+    assert mode == "standard"
+    assert root == project_root
+
+
+def test_resolve_project_execution_context_standard_missing_root(tmp_path):
+    """Test that standard mode without PROJECT_ROOT raises ValueError."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18791)
+
+    with pytest.raises(ValueError, match="PROJECT_ROOT is required"):
+        runtime._resolve_project_execution_context({"PROJECT_MODE": "standard"})
+
+
+def test_resolve_project_execution_context_standard_relative_path(tmp_path):
+    """Test that standard mode with relative PROJECT_ROOT raises ValueError."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18792)
+
+    with pytest.raises(ValueError, match="PROJECT_ROOT must be an absolute path"):
+        runtime._resolve_project_execution_context({
+            "PROJECT_MODE": "standard",
+            "PROJECT_ROOT": "relative/path"
+        })
+
+
+def test_finalize_done_payload_legacy_mode(tmp_path):
+    """Test that legacy mode copies workspace to Outbox."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    worker_dir = tmp_path / "pools" / "work" / "worker_01"
+    worker_dir.mkdir(parents=True)
+    workspace_dir = worker_dir / "workspace"
+    workspace_dir.mkdir()
+    outbox_dir = tmp_path / "pools" / "work" / "Outbox"
+    outbox_dir.mkdir()
+
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18793)
+    slot = runtime._slots["worker_01"]
+    slot.project_mode = "legacy"
+    slot.project_root = None
+
+    (workspace_dir / "artifact.txt").write_text("test artifact", encoding="utf-8")
+
+    result = runtime._finalize_done_payload(slot, "SignalBridge-v1-Build")
+
+    assert result["collected"] is True
+    assert (outbox_dir / "SignalBridge-v1-Build" / "artifact.txt").exists()
+
+
+def test_finalize_done_payload_standard_mode(tmp_path):
+    """Test that standard mode generates project root index txt."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    worker_dir = tmp_path / "pools" / "work" / "worker_01"
+    worker_dir.mkdir(parents=True)
+    (worker_dir / "workspace").mkdir()
+    outbox_dir = tmp_path / "pools" / "work" / "Outbox"
+    outbox_dir.mkdir()
+
+    project_root = tmp_path / "test_project"
+    project_root.mkdir()
+
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18794)
+    slot = runtime._slots["worker_01"]
+    slot.project_mode = "standard"
+    slot.project_root = project_root
+
+    result = runtime._finalize_done_payload(slot, "SignalBridge-v1-Build")
+
+    assert result["written"] is True
+    index_file = outbox_dir / "SignalBridge-v1-Build.txt"
+    assert index_file.exists()
+
+    content = index_file.read_text(encoding="utf-8")
+    assert content == f"{project_root}\n"
+
+
+def test_finalize_done_payload_free_mode(tmp_path):
+    """Test that free mode skips artifact collection."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    worker_dir = tmp_path / "pools" / "work" / "worker_01"
+    worker_dir.mkdir(parents=True)
+    workspace_dir = worker_dir / "workspace"
+    workspace_dir.mkdir()
+    outbox_dir = tmp_path / "pools" / "work" / "Outbox"
+    outbox_dir.mkdir()
+
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18795)
+    slot = runtime._slots["worker_01"]
+    slot.project_mode = "free"
+    slot.project_root = None
+
+    (workspace_dir / "artifact.txt").write_text("test artifact", encoding="utf-8")
+
+    result = runtime._finalize_done_payload(slot, "SignalBridge-v1-Build")
+
+    assert result["skipped"] is True
+    assert not (outbox_dir / "SignalBridge-v1-Build").exists()
+    assert not (outbox_dir / "SignalBridge-v1-Build.txt").exists()
+
+
+def test_write_project_root_index_content(tmp_path):
+    """Test that project root index contains all required headers."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    outbox_dir = tmp_path / "pools" / "work" / "Outbox"
+    outbox_dir.mkdir()
+
+    project_root = tmp_path / "test_project"
+    project_root.mkdir()
+
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18796)
+
+    result = runtime.write_project_root_index("SignalBridge-v2-Package", project_root)
+
+    assert result["written"] is True
+    index_file = outbox_dir / "SignalBridge-v2-Package.txt"
+    assert index_file.exists()
+
+    content = index_file.read_text(encoding="utf-8")
+    assert content == f"{project_root}\n"
+
+
+def test_dispatch_next_with_project_mode_standard(tmp_path):
+    """Test that dispatch_next correctly parses PROJECT_MODE and PROJECT_ROOT."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    worker_dir = tmp_path / "pools" / "work" / "worker_01"
+    worker_dir.mkdir(parents=True)
+    (worker_dir / "workspace").mkdir()
+
+    project_root = tmp_path / "test_project"
+    project_root.mkdir()
+
+    tools_dir = tmp_path / "runtime" / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
+        (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
+
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18797)
+
+    import app.shared.launch_manager as lm_module
+    original_launch = lm_module.LaunchManager.launch
+
+    def mock_launch(self, request, dry_run=True):
+        return {"launched": True, "dry_run": True, "pid": 1234, "job_handle": None}
+
+    lm_module.LaunchManager.launch = mock_launch
+
+    try:
+        queue_file = tmp_path / "pools" / "work" / "Queue" / "task.txt"
+        queue_file.write_text(
+            f"PROJECT_KEY: SignalBridge-v1-Build\n"
+            f"PROJECT_MODE: standard\n"
+            f"PROJECT_ROOT: {project_root}\n\n"
+            f"Build the project",
+            encoding="utf-8"
+        )
+
+        result = runtime.dispatch_next(dry_run=True)
+
+        assert result["dispatched"] is True
+        slot = runtime._slots["worker_01"]
+        assert slot.project_mode == "standard"
+        assert slot.project_root == project_root
+    finally:
+        lm_module.LaunchManager.launch = original_launch
+
+
+def test_dispatch_next_standard_mode_missing_project_root(tmp_path):
+    """Test that standard mode without PROJECT_ROOT raises ValueError."""
+    (tmp_path / "pools" / "work" / "Queue").mkdir(parents=True)
+    worker_dir = tmp_path / "pools" / "work" / "worker_01"
+    worker_dir.mkdir(parents=True)
+    (worker_dir / "workspace").mkdir()
+
+    tools_dir = tmp_path / "runtime" / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
+        (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
+
+    runtime = WorkRuntime(root_dir=tmp_path, signal_port=18798)
+
+    queue_file = tmp_path / "pools" / "work" / "Queue" / "task.txt"
+    queue_file.write_text(
+        "PROJECT_KEY: SignalBridge-v1-Build\n"
+        "PROJECT_MODE: standard\n\n"
+        "Build the project",
+        encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="PROJECT_ROOT is required"):
+        runtime.dispatch_next(dry_run=True)

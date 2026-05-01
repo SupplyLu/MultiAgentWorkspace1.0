@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import logging
+import os
 import signal
 import socket
 import sys
@@ -21,6 +22,8 @@ import time
 from pathlib import Path
 
 from app.runtimes.package_runtime import PackageRuntime, PackageDeniedError
+from app.services.runtime_registry import RuntimeRegistry
+from app.shared.single_instance_guard import SingleInstanceGuard
 
 
 def find_free_port(start: int = 19300, end: int = 19400) -> int:
@@ -124,15 +127,34 @@ def main() -> None:
     logger.info(f"工作区: {root_dir}")
     logger.info(f"日志文件: {log_file}")
 
+    guard = SingleInstanceGuard(root_dir=root_dir, instance_key="package")
+    success, message = guard.try_acquire(timeout=0.1)
+    if not success:
+        logger.warning(f"Package Runtime 启动被拒绝: {message}")
+        print(f"[Package Runtime] {message}")
+        print("提示：如需重启，请先停止现有进程或使用 UI 控制面的 restart 功能")
+        sys.exit(1)
+    logger.info("单实例守护锁已获取")
+
     signal_port = args.port or find_free_port()
     logger.info(f"信号服务端口: {signal_port}")
 
     ensure_directory_structure(root_dir)
     logger.info("目录结构已确认")
 
+    registry = RuntimeRegistry(root_dir=root_dir)
+
     runtime = PackageRuntime(root_dir=root_dir, signal_port=signal_port)
     runtime.start()
     logger.info("Signal Server 已启动")
+
+    registry.register(
+        pool="package",
+        pid=os.getpid(),
+        port=signal_port,
+        status="running"
+    )
+    logger.info("已注册到 RuntimeRegistry")
 
     shutdown_flag = False
 
@@ -143,6 +165,14 @@ def main() -> None:
             logger.info("收到关闭信号，正在停止...")
             runtime.stop()
             logger.info("Signal Server 已停止")
+            guard.release()
+            registry.register(
+                pool="package",
+                pid=os.getpid(),
+                port=signal_port,
+                status="stopped"
+            )
+            logger.info("已更新 RuntimeRegistry 状态为 stopped")
             sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -152,39 +182,52 @@ def main() -> None:
     logger.info("开始监控 Queue 目录...")
     poll_interval = args.poll_interval
     last_check_time = 0.0
+    consecutive_failures = 0
+    max_backoff = 60.0
 
     while True:
         current_time = time.time()
         if current_time - last_check_time >= poll_interval:
             last_check_time = current_time
 
-            # 检查超时任务
-            timed_out = runtime.check_timeouts()
-            for item in timed_out:
-                logger.warning(
-                    f"任务超时并已回队: {item['task_id']} @ {item['slot_id']} after {item['timeout_seconds']}s"
-                )
+            try:
+                registry.heartbeat("package")
 
-            # 轮询 Queue
-            tasks = runtime.list_queue_tasks()
-            if tasks:
-                logger.info(f"检测到 {len(tasks)} 个任务")
+                # 检查超时任务
+                timed_out = runtime.check_timeouts()
+                for item in timed_out:
+                    logger.warning(
+                        f"任务超时并已回队: {item['task_id']} @ {item['slot_id']} after {item['timeout_seconds']}s"
+                    )
 
-                try:
-                    result = runtime.dispatch_next(dry_run=False)
-                    if result.get("dispatched"):
-                        logger.info(
-                            f"派发成功: {result['task_id']} -> {result['slot_id']} ({result['stage']})"
-                        )
-                        launch_result = result.get("launch", {})
-                        if launch_result.get("launched"):
-                            logger.info(f"Package 进程已启动: PID={launch_result.get('pid')}")
-                    else:
-                        logger.warning(f"派发失败: {result.get('error', '未知错误')}")
-                except PackageDeniedError as e:
-                    logger.error(f"Package task denied: {e}")
-                except Exception as e:
-                    logger.error(f"派发异常: {e}", exc_info=True)
+                # 轮询 Queue
+                tasks = runtime.list_queue_tasks()
+                if tasks:
+                    logger.info(f"检测到 {len(tasks)} 个任务")
+
+                    try:
+                        result = runtime.dispatch_next(dry_run=False)
+                        if result.get("dispatched"):
+                            logger.info(
+                                f"派发成功: {result['task_id']} -> {result['slot_id']} ({result['stage']})"
+                            )
+                            launch_result = result.get("launch", {})
+                            if launch_result.get("launched"):
+                                logger.info(f"Package 进程已启动: PID={launch_result.get('pid')}")
+                        else:
+                            logger.warning(f"派发失败: {result.get('error', '未知错误')}")
+                    except PackageDeniedError as e:
+                        logger.error(f"Package task denied: {e}")
+                    except Exception as e:
+                        logger.error(f"派发异常: {e}", exc_info=True)
+
+                consecutive_failures = 0
+
+            except Exception as e:
+                consecutive_failures += 1
+                backoff = min(2 ** consecutive_failures, max_backoff)
+                logger.error(f"Cycle failed (attempt {consecutive_failures}): {e}", exc_info=True)
+                time.sleep(backoff)
 
         time.sleep(0.1)
 

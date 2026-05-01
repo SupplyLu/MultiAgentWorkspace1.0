@@ -35,8 +35,22 @@ import threading
 import time
 
 from app.services.signal_server import RuntimeSignalServer
+from app.services.slot_governance_store import SlotGovernanceStore
 from app.shared.file_queue import parse_task_file
 from app.shared.launch_manager import LaunchManager, LaunchRequest
+
+
+def _escape_bat_var(s: str) -> str:
+    """Escape Windows batch variable values to prevent command injection."""
+    result = s.replace("%", "%%")
+    result = result.replace("^", "^^")
+    result = result.replace("&", "^&")
+    result = result.replace("|", "^|")
+    result = result.replace("<", "^<")
+    result = result.replace(">", "^>")
+    result = result.replace('"', '^"')
+    result = result.replace("!", "^^!")
+    return result
 
 
 @dataclass
@@ -47,12 +61,14 @@ class PackageSlot:
     workspace_dir: Path
     slot_type: str = ""  # cutter/tester/releaser/complete_player
     busy: bool = False
+    finalizing: bool = False
     assigned_task_id: str = ""
     assigned_project_name: str = ""
     launch_result: dict[str, Any] | None = None
     assigned_at_epoch: float = 0.0
     timeout_seconds: int = 1800
     last_known_state: str = "state_0"
+    enabled: bool = True
 
 
 @dataclass
@@ -109,6 +125,7 @@ class PackageRuntime:
 
         # 槽位
         self._slots: dict[str, PackageSlot] = {}
+        self._governance_store = SlotGovernanceStore(root_dir=self._root_dir)
         self._init_slots()
 
         # 任务跟踪
@@ -125,6 +142,7 @@ class PackageRuntime:
         self._launch_manager = LaunchManager()
         self._lifecycle_tools_dir = self._root_dir / "runtime" / "tools"
         self._lock = threading.RLock()
+        self._paused = False
 
     def _init_slots(self) -> None:
         """动态扫描 cutter_*, tester_*, releaser_*, complete_player_* 槽位"""
@@ -151,6 +169,7 @@ class PackageRuntime:
                         slot_dir=sub_dir,
                         workspace_dir=workspace_dir,
                         slot_type=slot_type,
+                        enabled=self._governance_store.is_enabled("package", sub_dir.name),
                     )
                     break
 
@@ -172,7 +191,7 @@ class PackageRuntime:
         with self._lock:
             for slot_id in sorted(self._slots.keys()):
                 slot = self._slots[slot_id]
-                if slot.slot_type == slot_type and not slot.busy:
+                if slot.enabled and slot.slot_type == slot_type and not slot.busy and not slot.finalizing:
                     return slot
         return None
 
@@ -212,7 +231,7 @@ class PackageRuntime:
         headers = task_data.get("headers", {})
         task_id = headers.get("TASK_ID", task_file.stem)
         project_name = headers.get("PROJECT_NAME", task_id)
-        project_root = Path(headers.get("PROJECT_ROOT", self._root_dir / "pools" / "work" / "fields" / project_name))
+        project_root = self._root_dir / "pools" / "work" / "fields" / project_name
         original_task = headers.get("ORIGINAL_TASK", task_data.get("content", ""))
 
         # 创建共享上下文目录
@@ -280,12 +299,12 @@ TIMEOUT: {slot.timeout_seconds}
 REM Package Agent launch: {slot.slot_id} for task {task.task_id}
 REM Stage: {stage}
 
-set AGENT_ID={slot.slot_id}
-set TASK_ID={task.task_id}
-set PROJECT_NAME={task.project_name}
-set PROJECT_ROOT={task.project_root}
-set CONTEXT_DIR={task.context_dir}
-set PACKAGE_STAGE={stage}
+set "AGENT_ID={_escape_bat_var(slot.slot_id)}"
+set "TASK_ID={_escape_bat_var(task.task_id)}"
+set "PROJECT_NAME={_escape_bat_var(task.project_name)}"
+set "PROJECT_ROOT={_escape_bat_var(task.project_root.as_posix())}"
+set "CONTEXT_DIR={_escape_bat_var(task.context_dir.as_posix())}"
+set "PACKAGE_STAGE={_escape_bat_var(stage)}"
 set ROLE=packager
 set POOL=package
 set SIGNAL_SERVER_PORT={self._signal_port}
@@ -332,28 +351,61 @@ exit /b %ERRORLEVEL%
 
     def dispatch_next(self, dry_run: bool = True) -> dict[str, Any]:
         """派发下一个任务"""
-        tasks = self.list_queue_tasks()
-        if not tasks:
-            return {"dispatched": False, "error": "No tasks in queue"}
+        import logging
+        logger = logging.getLogger(__name__)
 
-        task_file = tasks[0]
+        if self._paused:
+            return {"dispatched": False, "error": "Runtime is paused"}
+
+        original_name = ""
+        processing_file = None
+
+        with self._lock:
+            tasks = self.list_queue_tasks()
+            if not tasks:
+                return {"dispatched": False, "error": "No tasks in queue"}
+
+            task_file = tasks[0]
+            original_name = task_file.name
+            processing_file = task_file.with_name(task_file.name + ".processing")
+            try:
+                task_file.rename(processing_file)
+                task_file = processing_file
+            except OSError:
+                return {"dispatched": False, "error": "No tasks in queue"}
+
         task_data = parse_task_file(task_file)
+        if task_data is None:
+            if original_name:
+                restored = task_file.with_name(original_name)
+                try:
+                    task_file.rename(restored)
+                except OSError:
+                    pass
+            return {"dispatched": False, "error": "Failed to parse task file (invalid or disappeared)"}
 
         # 创建任务上下文
         task = self._create_task_context(task_data, task_file)
 
-        # 删除队列文件
-        try:
-            task_file.unlink()
-        except OSError:
-            pass
-
-        # 派发到第一阶段：Cut
+        # 先尝试派发到第一阶段：Cut
         result = self._deploy_to_stage(task, "cut", dry_run=dry_run)
 
-        if not result["dispatched"]:
-            # 第一阶段派发失败，回滚任务状态
+        if result["dispatched"]:
+            # 派发成功，删除已 claim 的队列文件
+            try:
+                task_file.unlink()
+            except OSError:
+                pass
+        else:
+            # 派发失败（没有空闲槽位），恢复 Queue 文件，清理任务跟踪
+            logger.warning(f"Dispatch failed for task {task.task_id}: {result.get('error', 'Unknown error')}. Keeping queue file for retry.")
             del self._tasks[task.task_id]
+            if original_name:
+                restored = task_file.with_name(original_name)
+                try:
+                    task_file.rename(restored)
+                except OSError:
+                    pass
 
         return result
 
@@ -364,21 +416,29 @@ exit /b %ERRORLEVEL%
         signal = signal_result.get("signal", "")
         to_state = signal_result.get("to_state", "")
 
-        slot = self._slots.get(agent_id)
-        if slot is None:
-            return
-
-        task = self._tasks.get(task_id)
-        if task is None:
-            return
-
-        # 验证槽位正在处理该任务
-        if slot.assigned_task_id != task_id:
-            return
-
         with self._lock:
+            slot = self._slots.get(agent_id)
+            if slot is None:
+                return
+
+            task = self._tasks.get(task_id)
+            if task is None:
+                return
+
+            # 验证槽位正在处理该任务
+            if slot.assigned_task_id != task_id:
+                return
+
+            # 如果槽位已经进入终态收敛，忽略所有后续信号
+            if slot.finalizing:
+                return
+
             if to_state:
                 slot.last_known_state = to_state
+
+            terminal_signal = signal in ["done", "denied"]
+            if terminal_signal:
+                slot.finalizing = True
 
         # 处理通过信号
         if signal in ["cut_passed", "test_passed", "release_passed"]:
@@ -411,7 +471,10 @@ exit /b %ERRORLEVEL%
         current_index = self.STAGES.index(current_stage)
         if current_index + 1 < len(self.STAGES):
             next_stage = self.STAGES[current_index + 1]
-            self._deploy_to_stage(task, next_stage, dry_run=False)
+            result = self._deploy_to_stage(task, next_stage, dry_run=False)
+            if not result["dispatched"]:
+                # 下一阶段无可用槽位，回队等待
+                self._requeue_task(task)
         else:
             # 所有阶段完成，不应该到这里（done 信号会处理）
             pass
@@ -425,15 +488,16 @@ exit /b %ERRORLEVEL%
         self._collect_release_to_outbox(task)
 
         # 清理槽位
-        self._finalize_slot(slot)
+        self._finalize_slot_claimed(slot)
 
         # 清理任务跟踪
-        del self._tasks[task.task_id]
+        self._tasks.pop(task.task_id, None)
 
     def _handle_denied(self, task: PackageTask, slot: PackageSlot) -> None:
         """处理拒绝信号"""
-        task.current_stage = "denied"
+        # [Fix] 先保存真实拒绝阶段，再改 current_stage
         denied_stage = task.current_stage
+        task.current_stage = "denied"
 
         # 记录拒绝信息
         task.stage_results[denied_stage] = {
@@ -445,10 +509,10 @@ exit /b %ERRORLEVEL%
         self._write_rejectbox_marker(task, denied_stage)
 
         # 清理槽位
-        self._finalize_slot(slot)
+        self._finalize_slot_claimed(slot)
 
         # 清理任务跟踪
-        del self._tasks[task.task_id]
+        self._tasks.pop(task.task_id, None)
 
         # 抛出异常让 Runtime 主循环知道这是失败完成
         raise PackageDeniedError(
@@ -457,13 +521,29 @@ exit /b %ERRORLEVEL%
 
     def _finalize_slot(self, slot: PackageSlot) -> None:
         """终结槽位状态"""
-        if slot.launch_result is not None:
-            self._launch_manager.cleanup_launch(slot.launch_result)
+        with self._lock:
+            if not slot.busy or slot.finalizing or not slot.assigned_task_id:
+                return
+            slot.finalizing = True
+
+        self._finalize_slot_claimed(slot)
+
+    def _finalize_slot_claimed(self, slot: PackageSlot) -> None:
+        """终结已由调用方 claim 过 finalizing 权限的槽位状态"""
+        with self._lock:
+            if not slot.busy or not slot.assigned_task_id:
+                return
+            claimed_launch_result = slot.launch_result
+            slot.launch_result = None
+
+        if claimed_launch_result is not None:
+            self._launch_manager.cleanup_launch(claimed_launch_result)
 
         self._clean_slot_dir(slot)
 
         with self._lock:
             slot.busy = False
+            slot.finalizing = False
             slot.assigned_task_id = ""
             slot.assigned_project_name = ""
             slot.launch_result = None
@@ -540,7 +620,7 @@ STAGE_RESULTS:
 
         with self._lock:
             for slot in self._slots.values():
-                if not slot.busy or not slot.assigned_task_id:
+                if not slot.busy or slot.finalizing or not slot.assigned_task_id:
                     continue
 
                 elapsed = current_time - slot.assigned_at_epoch
@@ -568,8 +648,12 @@ STAGE_RESULTS:
                         # 清理槽位
                         self._clean_slot_dir(slot)
                         slot.busy = False
+                        slot.finalizing = False
                         slot.assigned_task_id = ""
+                        slot.assigned_project_name = ""
                         slot.launch_result = None
+                        slot.assigned_at_epoch = 0.0
+                        slot.last_known_state = "state_0"
 
                         # 清理任务跟踪
                         del self._tasks[task.task_id]
@@ -590,6 +674,108 @@ PREVIOUS_STAGE: {task.current_stage}
 {task.original_task}
 """
         task_file.write_text(task_content, encoding="utf-8")
+
+    def handle_api_request(self, method: str, path: str, payload: dict | None) -> dict[str, Any]:
+        """Handle API requests for runtime status and health."""
+        if method == "GET" and path == "/api/status":
+            return self._get_status()
+        elif method == "GET" and path == "/api/health":
+            return self._get_health()
+        elif method == "POST" and path == "/api/control/pause":
+            return self._pause()
+        elif method == "POST" and path == "/api/control/resume":
+            return self._resume()
+        elif method == "GET" and path == "/api/control/state":
+            return self._get_control_state()
+        elif method == "POST" and path == "/api/control/slot/offline":
+            return self._slot_offline(payload)
+        elif method == "POST" and path == "/api/control/slot/online":
+            return self._slot_online(payload)
+        else:
+            return {"error": "unknown endpoint"}
+
+    def _pause(self) -> dict[str, Any]:
+        """Pause runtime task dispatch."""
+        self._paused = True
+        return self._get_control_state()
+
+    def _resume(self) -> dict[str, Any]:
+        """Resume runtime task dispatch."""
+        self._paused = False
+        return self._get_control_state()
+
+    def _get_control_state(self) -> dict[str, Any]:
+        """Return control state for pause/resume."""
+        return {
+            "paused": self._paused,
+            "pool": "package",
+        }
+
+    def _slot_offline(self, payload: dict | None) -> dict[str, Any]:
+        if not payload or "slot_id" not in payload:
+            return {"success": False, "error": "slot_id required"}
+        slot_id = payload["slot_id"]
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return {"success": False, "error": f"slot not found: {slot_id}"}
+        with self._lock:
+            slot.enabled = False
+            self._governance_store.set_enabled("package", slot_id, False)
+        return {"success": True, "pool": "package", "slot_id": slot_id, "enabled": False, "busy": slot.busy}
+
+    def _slot_online(self, payload: dict | None) -> dict[str, Any]:
+        if not payload or "slot_id" not in payload:
+            return {"success": False, "error": "slot_id required"}
+        slot_id = payload["slot_id"]
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return {"success": False, "error": f"slot not found: {slot_id}"}
+        with self._lock:
+            slot.enabled = True
+            self._governance_store.set_enabled("package", slot_id, True)
+        return {"success": True, "pool": "package", "slot_id": slot_id, "enabled": True, "busy": slot.busy}
+
+    def _get_status(self) -> dict[str, Any]:
+        """Return current runtime status with pool info and slot states."""
+        with self._lock:
+            slots_data = []
+            for slot_id in sorted(self._slots.keys()):
+                slot = self._slots[slot_id]
+
+                # Find task for this slot to get current_stage
+                task = self._tasks.get(slot.assigned_task_id) if slot.assigned_task_id else None
+                current_stage = task.current_stage if task else ""
+
+                # Determine current_state from last_known_state
+                current_state = slot.last_known_state if slot.last_known_state != "state_0" else ("state_1" if slot.busy else "idle")
+
+                slots_data.append({
+                    "slot_id": slot.slot_id,
+                    "busy": slot.busy,
+                    "assigned_task_id": slot.assigned_task_id,
+                    "assigned_project_name": slot.assigned_project_name,
+                    "current_state": current_state,
+                    "current_stage": current_stage,
+                    "enabled": slot.enabled,
+                })
+
+            queue_count = len(self.list_queue_tasks())
+
+            return {
+                "pool": "package",
+                "signal_port": self._signal_port,
+                "is_running": self._signal_server.is_running,
+                "queue_count": queue_count,
+                "slots": slots_data,
+            }
+
+    def _get_health(self) -> dict[str, Any]:
+        """Return basic health check information."""
+        return {
+            "ok": True,
+            "pool": "package",
+            "uptime_seconds": 0,
+        }
 
     def start(self) -> None:
         """启动 Runtime"""

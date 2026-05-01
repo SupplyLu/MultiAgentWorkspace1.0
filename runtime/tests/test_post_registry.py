@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,46 @@ def test_add_dependency_uses_project_key_fields(tmp_path: Path):
     assert dependency["target_project_key"] == "proj_002"
     assert dependency["rule"] == "after_delivered"
     assert registry.get_dependencies("proj_002") == [dependency]
+
+
+def test_add_dependency_is_atomic_under_concurrent_writes(tmp_path: Path):
+    """Test that concurrent add_dependency calls don't lose updates due to read-modify-write race."""
+    registry = PostRegistry(root_dir=tmp_path)
+
+    # Simulate race condition: both threads read empty list, both append, one overwrites the other
+    # This test verifies the fix uses JSONStore.update() for atomic read-modify-write
+
+    errors: list[Exception] = []
+    results: list[dict] = []
+
+    def add_dep(source_key: str):
+        try:
+            result = registry.add_dependency(
+                source_project_key=source_key,
+                target_project_key="proj_target",
+                rule="after_delivered",
+            )
+            results.append(result)
+        except Exception as exc:  # pragma: no cover - defensive thread capture
+            errors.append(exc)
+
+    # Launch 10 concurrent dependency additions to increase race probability
+    threads = [
+        threading.Thread(target=add_dep, args=(f"proj_{i:03d}",))
+        for i in range(10)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert errors == []
+    assert len(results) == 10
+
+    # Verify all 10 dependencies were persisted (not lost due to race)
+    deps = registry.get_dependencies("proj_target")
+    assert len(deps) == 10
+    assert {d["source_project_key"] for d in deps} == {f"proj_{i:03d}" for i in range(10)}
 
 
 def test_record_delivery_persists_delivery_event(tmp_path: Path):
@@ -272,3 +313,50 @@ def test_update_remaining_route_audit_detail_contains_required_fields(tmp_path: 
     assert detail["reason"] == "skip gate for faster delivery"
     assert detail["before"]["route"] == ["thinking", "construct", "work"]
     assert detail["after"]["route"] == ["thinking", "construct", "work"]
+
+
+def test_get_project_returns_none_for_corrupted_project_file(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+    project_file = tmp_path / "transfers" / "projects" / "broken.json"
+    project_file.write_text("{broken", encoding="utf-8")
+
+    assert registry.get_project("broken") is None
+
+
+def test_get_dependencies_returns_empty_for_corrupted_file(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+    dep_file = tmp_path / "transfers" / "dependencies" / "proj_002.json"
+    dep_file.write_text("{broken", encoding="utf-8")
+
+    assert registry.get_dependencies("proj_002") == []
+
+
+def test_list_deliveries_skips_corrupted_delivery_files(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+    _register_project(registry)
+    delivery = registry.record_delivery(
+        project_key="proj_001",
+        payload_name="task_proj_001.txt",
+        from_pool="task",
+        to_pool="thinking",
+        delivery_address="pools/thinking/Queue/task_proj_001.txt",
+        status="delivered",
+        reason="initial send",
+    )
+    delivery_file = tmp_path / "transfers" / "deliveries" / f"{delivery['delivery_id']}.json"
+    delivery_file.write_text("{broken", encoding="utf-8")
+
+    assert registry.list_deliveries(project_key="proj_001") == []
+
+
+def test_list_manager_actions_skips_corrupted_action_files(tmp_path: Path):
+    registry = PostRegistry(root_dir=tmp_path)
+    action = registry.record_manager_action(
+        project_key="proj_001",
+        action_type="hold",
+        detail="manual",
+    )
+    action_file = tmp_path / "transfers" / "manager_actions" / f"{action['action_id']}.json"
+    action_file.write_text("{broken", encoding="utf-8")
+
+    assert registry.list_manager_actions(project_key="proj_001") == []

@@ -33,7 +33,7 @@ def test_construct_preserves_project_key_without_batch_prefix(tmp_path):
     project_key = "SignalOfBridge-v1-Build"
     project_dir = queue_dir / project_key
     project_dir.mkdir()
-    (project_dir / "summary.txt").write_text(f"BATCH_ID: {project_key}", encoding="utf-8")
+    (project_dir / "summary.txt").write_text(f"PROJECT_KEY: {project_key}", encoding="utf-8")
     
     # 3. Preprocess folders (simulate listing tasks)
     tasks = runtime.list_queue_tasks()

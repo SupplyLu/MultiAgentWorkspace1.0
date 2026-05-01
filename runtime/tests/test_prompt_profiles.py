@@ -1,66 +1,78 @@
-"""Test prompt profile loading and desktop UI presentation."""
+"""Tests for the prompt tab backed by bootstrap files."""
 
-import json
+import os
+from pathlib import Path
 
-from app.desktop_ui.views.prompt_profile_view import PromptProfileStore, PromptProfileView
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+try:
+    from PySide6.QtWidgets import QApplication
+except ModuleNotFoundError:  # pragma: no cover
+    QApplication = None
+
 from app.desktop_ui.main_window import MainWindow
+from app.desktop_ui.views.prompt_profile_view import PromptProfileView
 
 
-def test_prompt_profiles_roundtrip(tmp_path):
-    """Prompt profiles should round-trip through JSON storage."""
-    config_file = tmp_path / "prompt_profiles.json"
-    store = PromptProfileStore(config_file)
+@pytest.fixture
+def qapp():
+    if QApplication is None:
+        yield None
+        return
 
-    profiles = {
-        "default": {
-            "label": "默认",
-            "system_prompt": "You are the default profile.",
-            "temperature": 0.2,
-        },
-        "review": {
-            "label": "评审",
-            "system_prompt": "You are the reviewer profile.",
-            "temperature": 0.1,
-        },
-    }
+    app = QApplication.instance()
+    created = False
+    if app is None:
+        app = QApplication([])
+        created = True
 
-    store.save_profiles(profiles)
-    loaded = store.load_profiles()
+    yield app
 
-    assert loaded == profiles
+    if created:
+        app.quit()
 
 
-def test_prompt_profile_view_displays_profiles(tmp_path):
-    """PromptProfileView should expose all available profile names."""
-    config_file = tmp_path / "prompt_profiles.json"
-    config_file.write_text(
-        json.dumps(
-            {
-                "default": {"label": "默认", "system_prompt": "A", "temperature": 0.2},
-                "review": {"label": "评审", "system_prompt": "B", "temperature": 0.1},
-            }
-        ),
-        encoding="utf-8",
-    )
+def test_prompt_profile_view_uses_tools_directory_from_config_file(qapp, tmp_path):
+    """PromptProfileView should resolve a config file path to its sibling tools directory."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    config_file = config_dir / "prompt_profiles.json"
+    config_file.write_text("{}", encoding="utf-8")
+
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir(parents=True)
+    (tools_dir / "WORK_BOOTSTRAP.txt").write_text("work bootstrap", encoding="utf-8")
+    (tools_dir / "THINKING_BOOTSTRAP.txt").write_text("thinking bootstrap", encoding="utf-8")
 
     view = PromptProfileView(config_file=config_file)
 
-    assert view.list_profile_names() == ["default", "review"]
+    assert view._store._tools_dir == Path(tools_dir)
+    assert view._store.load_content("WORK_BOOTSTRAP") == "work bootstrap"
+    assert view._store.load_content("THINKING_BOOTSTRAP") == "thinking bootstrap"
 
 
-def test_main_window_registers_prompt_profile_tab(tmp_path):
-    """MainWindow should register the prompt profile tab."""
-    config_file = tmp_path / "prompt_profiles.json"
-    config_file.write_text(
-        json.dumps(
-            {
-                "default": {"label": "默认", "system_prompt": "A", "temperature": 0.2}
-            }
-        ),
-        encoding="utf-8",
-    )
+def test_main_window_registers_prompt_profile_tab(qapp, tmp_path):
+    """MainWindow should register the prompt tab backed by PromptProfileView."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    config_file = config_dir / "prompt_profiles.json"
+    config_file.write_text("{}", encoding="utf-8")
+
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir(parents=True)
+    (tools_dir / "WORK_BOOTSTRAP.txt").write_text("work", encoding="utf-8")
 
     window = MainWindow(prompt_profiles_path=config_file)
 
-    labels = [label for _, label in window.central_widget.tabs]
+    tabs = window.centralWidget() if hasattr(window, "centralWidget") else window.central_widget
+    if hasattr(tabs, "tabs"):
+        labels = [label for _, label in tabs.tabs]
+        prompt_tab = next(widget for widget, label in tabs.tabs if label == "提示词")
+    else:
+        labels = [tabs.tabText(index) for index in range(tabs.count())]
+        prompt_index = labels.index("提示词")
+        prompt_tab = tabs.widget(prompt_index)
     assert "提示词" in labels
+    assert isinstance(prompt_tab, PromptProfileView)

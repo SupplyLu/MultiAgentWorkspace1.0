@@ -50,6 +50,57 @@ def test_registry_reader_returns_empty_when_no_registry(tmp_path):
     assert pools == []
 
 
+def test_registry_reader_uses_runtime_registry_service(monkeypatch, tmp_path):
+    """RegistryReader must reuse RuntimeRegistry instead of bare file reads."""
+    from app.desktop_ui.data.registry_reader import RegistryReader
+
+    called = {"list_all": False}
+
+    class FakeRegistry:
+        def __init__(self, root_dir):
+            assert Path(root_dir) == tmp_path
+
+        def list_all(self):
+            called["list_all"] = True
+            return [
+                {"pool": "work", "status": "running", "started_at": 1, "port": 18800},
+                {"pool": "gate", "status": "paused", "started_at": 2, "port": 19200},
+            ]
+
+    monkeypatch.setattr("app.desktop_ui.data.registry_reader.RuntimeRegistry", FakeRegistry)
+
+    reader = RegistryReader(root_dir=tmp_path)
+    pools = reader.list_running_pools()
+
+    assert called["list_all"] is True
+    assert pools == [{"pool": "work", "status": "running", "started_at": 1, "port": 18800}]
+
+
+def test_registry_reader_marks_dead_runtime_as_stopped(monkeypatch, tmp_path):
+    from app.desktop_ui.data.registry_reader import RegistryReader
+
+    registry_file = tmp_path / "runtime_registry.json"
+    registry_data = {
+        "work": {
+            "pool": "work",
+            "pid": 12345,
+            "port": 18800,
+            "status": "running",
+            "started_at": 1234567890.0,
+            "last_heartbeat": 1234567900.0,
+        }
+    }
+    registry_file.write_text(json.dumps(registry_data), encoding="utf-8")
+
+    monkeypatch.setattr("app.desktop_ui.data.registry_reader._is_pid_alive", lambda pid: False)
+
+    reader = RegistryReader(root_dir=tmp_path)
+    pools = reader.list_all_pools()
+
+    assert pools[0]["pool"] == "work"
+    assert pools[0]["status"] == "stopped"
+
+
 def test_runtime_client_fetches_status_from_api(tmp_path):
     """Test that RuntimeClient can fetch status from a running runtime's /api/status."""
     from app.desktop_ui.data.runtime_client import RuntimeClient

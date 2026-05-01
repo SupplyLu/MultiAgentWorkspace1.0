@@ -131,8 +131,8 @@ def test_scan_delivers_atomic_workorders_from_gate_outbox(tmp_path: Path):
     )
 
     outbox_dir = tmp_path / "pools" / "gate" / "Outbox"
-    workorder_1 = outbox_dir / "SignalOfBridge-v1-Build-001"
-    workorder_2 = outbox_dir / "SignalOfBridge-v1-Build-002"
+    workorder_1 = outbox_dir / "SignalOfBridge-v1-Build-UIupgrade001"
+    workorder_2 = outbox_dir / "SignalOfBridge-v1-Build-BackendPatch002"
     workorder_1.mkdir(parents=True, exist_ok=True)
     workorder_2.mkdir(parents=True, exist_ok=True)
     (workorder_1 / "task.txt").write_text("task 1", encoding="utf-8")
@@ -141,8 +141,8 @@ def test_scan_delivers_atomic_workorders_from_gate_outbox(tmp_path: Path):
     runtime = PostRuntime(root_dir=tmp_path, scan_interval_seconds=60)
     runtime.scan_once()
 
-    delivered_1 = tmp_path / "pools" / "work" / "Queue" / "SignalOfBridge-v1-Build-001"
-    delivered_2 = tmp_path / "pools" / "work" / "Queue" / "SignalOfBridge-v1-Build-002"
+    delivered_1 = tmp_path / "pools" / "work" / "Queue" / "SignalOfBridge-v1-Build-UIupgrade001"
+    delivered_2 = tmp_path / "pools" / "work" / "Queue" / "SignalOfBridge-v1-Build-BackendPatch002"
     assert delivered_1.exists()
     assert delivered_2.exists()
     assert (delivered_1 / "task.txt").exists()
@@ -154,8 +154,8 @@ def test_scan_delivers_atomic_workorders_from_gate_outbox(tmp_path: Path):
     deliveries = registry.list_deliveries(project_key="SignalOfBridge-v1-Build")
     assert len(deliveries) == 2
     assert {delivery["payload_name"] for delivery in deliveries} == {
-        "SignalOfBridge-v1-Build-001",
-        "SignalOfBridge-v1-Build-002",
+        "SignalOfBridge-v1-Build-UIupgrade001",
+        "SignalOfBridge-v1-Build-BackendPatch002",
     }
 
 

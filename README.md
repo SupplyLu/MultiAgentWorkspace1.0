@@ -99,26 +99,14 @@ Task Pool → Thinking Pool → Construct Pool → Gate Pool → Work Pool → P
 pip install -r requirements.txt
 ```
 
-启动 Runtime（示例）：
+启动桌面 UI：
 
 ```bash
 cd runtime
-
-# Work Pool
-python -m app.main
-
-# Thinking Pool
-python -m app.main_thinking
-
-# Construct Pool
-python -m app.main_construct
-
-# Gate Pool
-python -m app.main_gate
-
-# POST System（跨池编排）
-python -m app.main_post
+python -m app.desktop_ui.app
 ```
+
+桌面 UI 会作为统一入口，负责连接和管理各 Runtime；发布版不再要求用户分别手动启动每个 Runtime。
 
 ### 测试
 
@@ -241,26 +229,14 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Run runtimes (example):
+Launch the desktop UI:
 
 ```bash
 cd runtime
-
-# Work Pool
-python -m app.main
-
-# Thinking Pool
-python -m app.main_thinking
-
-# Construct Pool
-python -m app.main_construct
-
-# Gate Pool
-python -m app.main_gate
-
-# POST System (cross-pool orchestration)
-python -m app.main_post
+python -m app.desktop_ui.app
 ```
+
+The desktop UI is the unified entry point and is responsible for connecting to and managing the runtimes. The release build no longer requires users to manually start each runtime one by one.
 
 ### Test
 

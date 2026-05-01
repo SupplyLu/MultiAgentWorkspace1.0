@@ -71,3 +71,51 @@ def test_event_store_multiple_agents(tmp_path):
     assert len(store.get_events()) == 3
     assert len(store.get_events(agent_id="worker_01")) == 1
     assert len(store.get_events(task_id="t_000")) == 1
+
+
+def test_event_store_caps_index_growth(tmp_path):
+    store = EventStore(tmp_path, index_limit=5)
+
+    for i in range(8):
+        store.append(
+            LifecycleEvent(
+                timestamp=f"2026-04-17T10:0{i}:00Z",
+                agent_id="worker_01",
+                task_id=f"t_{i:03d}",
+                signal="done",
+                pool="work",
+                from_state="state_2",
+                to_state="state_3",
+            )
+        )
+
+    index_data = store._index_store.read()
+    assert len(index_data["events"]) == 5
+    assert index_data["events"][0]["task_id"] == "t_003"
+    assert index_data["events"][-1]["task_id"] == "t_007"
+
+
+def test_event_store_reports_corrupted_event_files(tmp_path):
+    store = EventStore(tmp_path, index_limit=10)
+    store.append(
+        LifecycleEvent(
+            timestamp="2026-04-17T10:00:00Z",
+            agent_id="worker_01",
+            task_id="t_001",
+            signal="done",
+            pool="work",
+            from_state="state_2",
+            to_state="state_3",
+        )
+    )
+
+    index_data = store._index_store.read()
+    event_file = index_data["events"][0]["file"]
+    from pathlib import Path
+    Path(event_file).write_text("{broken", encoding="utf-8")
+
+    events = store.get_events(agent_id="worker_01")
+    stats = store.get_index_stats()
+
+    assert events == []
+    assert stats["corrupt_files"] >= 1

@@ -10,10 +10,28 @@ import time
 import threading
 
 from app.services.signal_server import RuntimeSignalServer
+from app.services.slot_governance_store import SlotGovernanceStore
 from app.shared.launch_manager import LaunchManager, LaunchRequest
 from app.shared.shutdown_manager import ShutdownManager
 from app.shared.file_queue import parse_task_file
 from app.shared.json_store import JSONStore
+
+PROJECT_MODE_LEGACY = "legacy"
+PROJECT_MODE_STANDARD = "standard"
+PROJECT_MODE_FREE = "free"
+SUPPORTED_PROJECT_MODES = {
+    PROJECT_MODE_LEGACY,
+    PROJECT_MODE_STANDARD,
+    PROJECT_MODE_FREE,
+}
+
+@dataclass(frozen=True)
+class ProjectRootIndex:
+    project_key: str
+    project_root: Path
+
+    def render_txt(self) -> str:
+        return f"{self.project_root}\n"
 
 
 @dataclass
@@ -27,6 +45,22 @@ class WorkerSlot:
     launch_result: dict[str, Any] | None = None
     assigned_at_epoch: float = 0.0
     timeout_seconds: int = 300
+    project_mode: str = PROJECT_MODE_LEGACY
+    project_root: Path | None = None
+    enabled: bool = True
+
+
+def _escape_bat_var(s: str) -> str:
+    """Escape Windows batch variable values to prevent command injection."""
+    result = s.replace("%", "%%")
+    result = result.replace("^", "^^")
+    result = result.replace("&", "^&")
+    result = result.replace("|", "^|")
+    result = result.replace("<", "^<")
+    result = result.replace(">", "^>")
+    result = result.replace('"', '^"')
+    result = result.replace("!", "^^!")
+    return result
 
 
 class WorkRuntime:
@@ -45,6 +79,7 @@ class WorkRuntime:
 
         # Worker slots
         self._slots: dict[str, WorkerSlot] = {}
+        self._governance_store = SlotGovernanceStore(root_dir=self._root_dir)
         self._init_slots()
 
         # Signal server
@@ -84,6 +119,7 @@ class WorkRuntime:
                 continue
 
             slot_id = slot_dir.name
+            enabled = self._governance_store.is_enabled("work", slot_id)
             self._slots[slot_id] = WorkerSlot(
                 slot_id=slot_id,
                 slot_dir=slot_dir,
@@ -91,6 +127,7 @@ class WorkRuntime:
                 busy=False,
                 assigned_task_id="",
                 launch_result=None,
+                enabled=enabled,
             )
 
     def _deploy_lifecycle_bats(self, slot: WorkerSlot) -> None:
@@ -119,7 +156,7 @@ class WorkRuntime:
             worker_ids = sorted(self._slots.keys())
             for worker_id in worker_ids:
                 slot = self._slots[worker_id]
-                if not slot.busy and not slot.finalizing:
+                if slot.enabled and not slot.busy and not slot.finalizing:
                     return slot
             return None
 
@@ -175,6 +212,8 @@ class WorkRuntime:
         slot.launch_result = None
         slot.assigned_at_epoch = 0.0
         slot.timeout_seconds = 300
+        slot.project_mode = PROJECT_MODE_LEGACY
+        slot.project_root = None
 
     def _parse_timeout_seconds(self, headers: dict[str, Any]) -> int:
         """Parse TIMEOUT header safely with 300-second default and boundary limits."""
@@ -191,6 +230,47 @@ class WorkRuntime:
             return 86400
         return timeout_seconds
 
+    def _resolve_project_execution_context(self, headers: dict[str, Any]) -> tuple[str, Path | None]:
+        raw_mode = str(headers.get("PROJECT_MODE", "")).strip().lower()
+        if not raw_mode:
+            return PROJECT_MODE_LEGACY, None
+        if raw_mode not in SUPPORTED_PROJECT_MODES:
+            raise ValueError(f"Invalid PROJECT_MODE: {raw_mode}")
+        if raw_mode == PROJECT_MODE_STANDARD:
+            raw_root = str(headers.get("PROJECT_ROOT", "")).strip()
+            if not raw_root:
+                raise ValueError("PROJECT_ROOT is required when PROJECT_MODE=standard")
+            project_root = Path(raw_root)
+            if not project_root.is_absolute():
+                raise ValueError("PROJECT_ROOT must be an absolute path when PROJECT_MODE=standard")
+            return PROJECT_MODE_STANDARD, project_root
+        if raw_mode == PROJECT_MODE_FREE:
+            return PROJECT_MODE_FREE, None
+        return PROJECT_MODE_LEGACY, None
+
+    def write_project_root_index(self, project_key: str, project_root: Path) -> dict[str, Any]:
+        if not project_root.exists():
+            return {"written": False, "reason": "project_root_not_found", "project_root": str(project_root)}
+        index = ProjectRootIndex(project_key=project_key, project_root=project_root)
+        index_file = self._outbox_dir / f"{project_key}.txt"
+        index_file.parent.mkdir(parents=True, exist_ok=True)
+        index_file.write_text(index.render_txt(), encoding="utf-8")
+        return {
+            "written": True,
+            "project_key": project_key,
+            "index_file": str(index_file),
+            "project_root": str(project_root),
+        }
+
+    def _finalize_done_payload(self, slot: WorkerSlot, task_id: str) -> dict[str, Any]:
+        if slot.project_mode == PROJECT_MODE_STANDARD:
+            if slot.project_root is None:
+                return {"written": False, "reason": "project_root_missing"}
+            return self.write_project_root_index(task_id, slot.project_root)
+        if slot.project_mode == PROJECT_MODE_FREE:
+            return {"skipped": True, "reason": "no_artifacts_for_free_mode", "project_mode": slot.project_mode}
+        return self.collect_artifacts_to_outbox(slot.slot_id, task_id)
+
     def dispatch_next(self, dry_run: bool = True) -> dict[str, Any]:
         """Dispatch the next task to an idle worker slot."""
         if self._paused:
@@ -205,7 +285,7 @@ class WorkRuntime:
             worker_ids = sorted(self._slots.keys())
             for worker_id in worker_ids:
                 candidate = self._slots[worker_id]
-                if not candidate.busy:
+                if candidate.enabled and not candidate.busy:
                     candidate.busy = True
                     slot = candidate
                     break
@@ -236,11 +316,19 @@ class WorkRuntime:
         # Parse task file to get headers
         task_data = parse_task_file(task_file)
         headers = task_data.get("headers") or task_data.get("header") or {}
-        task_id = headers.get("TASK_ID", "")
-        feature_id = headers.get("FEATURE_ID", "")
-        timeout_seconds = self._parse_timeout_seconds(headers)
+        project_key = headers.get("PROJECT_KEY", "")
+        if not project_key:
+            self._rollback_dispatch(slot, task_file, task_file.name[:-11] if task_file.name.endswith(".processing") else task_file.name, task_data.get("raw", ""))
+            raise ValueError("PROJECT_KEY is required")
+        task_id = project_key
         raw_content = task_data.get("raw", "")
         original_name = task_file.name[:-11] if task_file.name.endswith(".processing") else task_file.name
+        try:
+            project_mode, project_root = self._resolve_project_execution_context(headers)
+        except Exception:
+            self._rollback_dispatch(slot, task_file, original_name, raw_content)
+            raise
+        timeout_seconds = self._parse_timeout_seconds(headers)
 
         # Clear workspace to prevent task A artifacts from leaking into task B
         workspace_dir = slot.workspace_dir
@@ -254,10 +342,17 @@ class WorkRuntime:
                 except OSError:
                     continue
 
-        # Clean up any stale task files in the worker slot root
-        for f in slot.slot_dir.glob("*.txt"):
-            if f.name.startswith("task_") or f.name.startswith("demo_task") or f.name.startswith("lifecycle_"):
-                f.unlink()
+        # Clean up any stale files in the worker slot root except workspace and hidden files
+        for item in slot.slot_dir.iterdir():
+            if item.name == "workspace" or item.name.startswith("."):
+                continue
+            try:
+                if item.is_file():
+                    item.unlink()
+                elif item.is_dir():
+                    shutil.rmtree(item)
+            except OSError:
+                continue
 
         # Copy task to worker slot directory
         worker_task_file = slot.slot_dir / original_name
@@ -268,30 +363,36 @@ class WorkRuntime:
             self._deploy_lifecycle_bats(slot)
 
             # Generate launch bat with fallback done signal.
-            # After Claude CLI exits (normally, or via end_turn), this bat sends a
-            # fallback "done" signal to guarantee slot release. If the worker already
-            # sent "done" via Done.bat, the signal is idempotent and safe.
-            bat_content = f"""@echo off
-REM Agent launch: {slot.slot_id} for task {task_id}
-REM Pool: work
+            bat_lines = [
+                "@echo off",
+                f"REM Agent launch: {slot.slot_id} for task {task_id}",
+                "REM Pool: work",
+                "",
+                f'set "AGENT_ID={_escape_bat_var(slot.slot_id)}"',
+                f'set "TASK_ID={_escape_bat_var(task_id)}"',
+                f'set "PROJECT_KEY={_escape_bat_var(task_id)}"',
+                f'set "PROJECT_MODE={_escape_bat_var(project_mode)}"',
+                "set ROLE=worker",
+                "set POOL=work",
+                f"set SIGNAL_SERVER_PORT={self._signal_port}",
+                "",
+                "cd /d \"%~dp0\"",
+                "",
+            ]
+            if project_root is not None:
+                bat_lines.append(f'set "PROJECT_ROOT={_escape_bat_var(project_root.as_posix())}"')
+                bat_lines.append("")
 
-set AGENT_ID={slot.slot_id}
-set TASK_ID={task_id}
-set ROLE=worker
-set FEATURE_ID={feature_id}
-set POOL=work
-set SIGNAL_SERVER_PORT={self._signal_port}
-
-cd /d "%~dp0"
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDECODE = $null; & 'claude.cmd' --dangerously-skip-permissions 'Read and strictly follow all instructions in WORK_BOOTSTRAP.txt in the current directory.'"
-
-REM Fallback: if Claude exits without calling Done.bat (e.g. end_turn stop_reason),
-REM this ensures the terminal signal is sent so the slot is released without timeout.
-python "%~dp0signal_bridge.py" --agent-id %AGENT_ID% --task-id %TASK_ID% --signal done --pool work --message "fallback_done"
-
-exit /b %ERRORLEVEL%
-"""
+            bat_lines.extend([
+                'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDECODE = $null; & \'claude.cmd\' --dangerously-skip-permissions \'Read and strictly follow all instructions in WORK_BOOTSTRAP.txt in the current directory.\'"',
+                "",
+                "REM Fallback: if Claude exits without calling Done.bat (e.g. end_turn stop_reason),",
+                "REM this ensures the terminal signal is sent so the slot is released without timeout.",
+                'python "%~dp0signal_bridge.py" --agent-id %AGENT_ID% --task-id %TASK_ID% --signal done --pool work --message "fallback_done"',
+                "",
+                "exit /b %ERRORLEVEL%",
+            ])
+            bat_content = "\n".join(bat_lines)
             launch_bat_path = slot.slot_dir / f"launch_{slot.slot_id}.bat"
             launch_bat_path.write_text(bat_content, encoding="utf-8")
 
@@ -322,6 +423,8 @@ exit /b %ERRORLEVEL%
             slot.launch_result = launch_result
             slot.assigned_at_epoch = time.time()
             slot.timeout_seconds = timeout_seconds
+            slot.project_mode = project_mode
+            slot.project_root = project_root
 
         return {
             "dispatched": True,
@@ -407,10 +510,10 @@ exit /b %ERRORLEVEL%
             cleanup_result = self._launch_manager.cleanup_launch(claimed_launch_result)
             result["cleanup"] = cleanup_result
 
-        # Step 4: collect_artifacts (done only, after process is dead) - outside lock
+        # Step 4: finalize done payload (after process is dead) - outside lock
         if collect_artifacts:
-            artifact_result = self.collect_artifacts_to_outbox(slot.slot_id, task_id)
-            result["artifacts"] = artifact_result
+            payload_result = self._finalize_done_payload(slot, task_id)
+            result["payload"] = payload_result
 
         # Step 5: clean_slot_dir - outside lock
         self._clean_slot_dir(slot)
@@ -423,6 +526,8 @@ exit /b %ERRORLEVEL%
             slot.launch_result = None
             slot.assigned_at_epoch = 0.0
             slot.timeout_seconds = 300
+            slot.project_mode = PROJECT_MODE_LEGACY
+            slot.project_root = None
 
         return result
 
@@ -549,6 +654,10 @@ exit /b %ERRORLEVEL%
             return self._resume()
         elif method == "GET" and path == "/api/control/state":
             return self._get_control_state()
+        elif method == "POST" and path == "/api/control/slot/offline":
+            return self._slot_offline(payload)
+        elif method == "POST" and path == "/api/control/slot/online":
+            return self._slot_online(payload)
         else:
             return {"error": "unknown endpoint"}
 
@@ -558,10 +667,13 @@ exit /b %ERRORLEVEL%
             slots_data = []
             for slot_id in sorted(self._slots.keys()):
                 slot = self._slots[slot_id]
+                current_state = "state_2" if slot.busy else "idle"
                 slots_data.append({
                     "slot_id": slot.slot_id,
                     "busy": slot.busy,
                     "assigned_task_id": slot.assigned_task_id,
+                    "current_state": current_state,
+                    "enabled": slot.enabled,
                 })
 
             queue_count = len(self.list_queue_tasks())
@@ -597,4 +709,48 @@ exit /b %ERRORLEVEL%
         return {
             "paused": self._paused,
             "pool": "work",
+        }
+
+    def _slot_offline(self, payload: dict | None) -> dict[str, Any]:
+        """Take a slot offline (disable it from accepting new tasks)."""
+        if not payload or "slot_id" not in payload:
+            return {"success": False, "error": "slot_id required"}
+
+        slot_id = payload["slot_id"]
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return {"success": False, "error": f"slot not found: {slot_id}"}
+
+        with self._lock:
+            slot.enabled = False
+            self._governance_store.set_enabled("work", slot_id, False)
+
+        return {
+            "success": True,
+            "pool": "work",
+            "slot_id": slot_id,
+            "enabled": False,
+            "busy": slot.busy,
+        }
+
+    def _slot_online(self, payload: dict | None) -> dict[str, Any]:
+        """Bring a slot online (enable it to accept new tasks)."""
+        if not payload or "slot_id" not in payload:
+            return {"success": False, "error": "slot_id required"}
+
+        slot_id = payload["slot_id"]
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return {"success": False, "error": f"slot not found: {slot_id}"}
+
+        with self._lock:
+            slot.enabled = True
+            self._governance_store.set_enabled("work", slot_id, True)
+
+        return {
+            "success": True,
+            "pool": "work",
+            "slot_id": slot_id,
+            "enabled": True,
+            "busy": slot.busy,
         }

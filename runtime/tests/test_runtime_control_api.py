@@ -165,7 +165,7 @@ def test_paused_runtime_skips_dispatch(tmp_path):
 
     tools_dir = root_dir / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create a task
@@ -207,7 +207,7 @@ def test_resumed_runtime_allows_dispatch(tmp_path):
 
     tools_dir = root_dir / "runtime" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
-    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "BOOTSTRAP.txt"]:
+    for f in ["Online.bat", "StartWriting.bat", "Done.bat", "signal_bridge.py", "WORK_BOOTSTRAP.txt"]:
         (tools_dir / f).write_text(f"mock {f}", encoding="utf-8")
 
     # Create a task

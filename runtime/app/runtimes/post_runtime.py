@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.flow_policy import FlowPolicy
-from app.services.post_naming import is_valid_atomic_workorder
+from app.services.post_naming import extract_project_key
 from app.services.post_registry import PostRegistry
 
 
@@ -16,6 +16,7 @@ class PostRuntime:
         self.root_dir = Path(root_dir)
         self.scan_interval_seconds = scan_interval_seconds
         self._registry = PostRegistry(root_dir=self.root_dir)
+        self._paused = False
 
         if policy_file is None:
             policy_file = self.root_dir / "config" / "flow_policy.json"
@@ -26,6 +27,8 @@ class PostRuntime:
 
     def scan_once(self):
         """Perform one scan cycle for all registered POST projects."""
+        if self._paused:
+            return
         for project_key in self._registry.list_projects():
             project = self._registry.get_project(project_key)
             if project is None:
@@ -39,16 +42,12 @@ class PostRuntime:
                     self._registry.update_project(project_key, {"status": "waiting"})
                 continue
 
-            current_pool = project.get("current_pool", project.get("from_pool"))
-            next_pool = project.get("next_pool")
-            if next_pool is None:
-                self._registry.update_project(project_key, {"status": "delivered"})
+            if self._handle_rejectbox_return(project):
                 continue
 
-            if current_pool == "gate":
-                if self._handle_gate_reject(project):
-                    continue
-                self._handle_gate_accept(project)
+            next_target = self._get_next_target(project)
+            if next_target is None:
+                self._registry.update_project(project_key, {"status": "delivered"})
                 continue
 
             self._handle_project_stage(project)
@@ -62,128 +61,146 @@ class PostRuntime:
                 return False
         return True
 
-    def _handle_project_stage(self, project: dict[str, Any]) -> None:
+    def _handle_rejectbox_return(self, project: dict[str, Any]) -> bool:
+        """Check if current pool's Rejectbox has rejected payloads and return them to the previous pool's Queue."""
         project_key = project["project_key"]
-        current_pool = project["current_pool"]
-        next_pool = project["next_pool"]
-        outbox_dir = self.root_dir / "pools" / current_pool / "Outbox"
-
-        txt_payload = outbox_dir / f"{project_key}.txt"
-        if txt_payload.exists():
-            self._block_project(project_key, f"Expected project directory '{project_key}', found txt payload '{txt_payload.name}'")
-            return
-
-        exact_payload = outbox_dir / project_key
-        if exact_payload.exists():
-            if not exact_payload.is_dir():
-                self._block_project(project_key, f"Expected project directory '{project_key}', found file payload")
-                return
-            self._deliver_payload(project, exact_payload, next_pool)
-            self._advance_project(project)
-            return
-
-        conflicting_dirs = [
-            entry
-            for entry in self._iter_directory_entries(outbox_dir)
-            if entry.name.startswith(f"{project_key}-") or entry.name.startswith(f"{project_key}.")
-        ]
-        if conflicting_dirs:
-            self._block_project(
-                project_key,
-                f"Project directory name must match project_key '{project_key}', found '{conflicting_dirs[0].name}'",
-            )
-
-    def _handle_gate_reject(self, project: dict[str, Any]) -> bool:
-        project_key = project["project_key"]
-        rejectbox_dir = self.root_dir / "pools" / "gate" / "Rejectbox"
-        reject_payload = rejectbox_dir / project_key
-        if not reject_payload.exists():
+        current_pool = self._get_current_pool(project)
+        if current_pool is None:
             return False
 
-        if not reject_payload.is_dir():
-            self._block_project(project_key, f"Gate Rejectbox payload '{reject_payload.name}' must be a directory")
+        rejectbox_dir = self.root_dir / "pools" / current_pool / "Rejectbox"
+        if not rejectbox_dir.exists():
+            return False
+
+        reject_payloads = self._collect_project_payloads(rejectbox_dir, project_key)
+        if not reject_payloads:
+            return False
+
+        route = project.get("route") or []
+        cursor = project.get("cursor", 0)
+        if cursor <= 0 or not route:
+            self._block_project(project_key, f"Rejected at {current_pool} but no previous pool to return to")
             return True
 
-        target_pool = self._previous_pool(project)
-        self._deliver_payload(project, reject_payload, target_pool)
+        previous_pool = route[cursor - 1]
+        previous_queue = self.root_dir / "pools" / previous_pool / "Queue"
+        previous_queue.mkdir(parents=True, exist_ok=True)
 
-        # Clean up reject payload after successful delivery
-        shutil.rmtree(reject_payload)
+        for payload in reject_payloads:
+            dest = previous_queue / payload.name
+            if dest.exists():
+                shutil.rmtree(dest) if dest.is_dir() else dest.unlink()
+            if payload.is_dir():
+                shutil.copytree(payload, dest)
+            else:
+                shutil.copy2(payload, dest)
+            if payload.is_dir():
+                shutil.rmtree(payload)
+            else:
+                payload.unlink()
 
-        route = project.get("route", [project["from_pool"], project["to_pool"]])
-        new_cursor = max(project.get("cursor", 0) - 1, 0)
-        current_pool = route[new_cursor]
-        next_pool = route[new_cursor + 1] if new_cursor + 1 < len(route) else None
-        self._registry.update_project(
-            project_key,
-            {
-                "cursor": new_cursor,
-                "current_pool": current_pool,
-                "next_pool": next_pool,
-                "status": "in_progress" if next_pool is not None else "delivered",
-            },
+        new_cursor = cursor - 1
+        new_current = route[new_cursor]
+        new_next = route[new_cursor + 1] if new_cursor + 1 < len(route) else None
+        self._registry.update_project(project_key, {
+            "cursor": new_cursor,
+            "current_pool": new_current,
+            "next_pool": new_next,
+            "status": "in_progress",
+        })
+
+        self._registry.record_manager_action(
+            project_key=project_key,
+            action_type="rejectbox_return",
+            detail=f"Returned from {current_pool}/Rejectbox to {previous_pool}/Queue",
         )
         return True
 
-    def _handle_gate_accept(self, project: dict[str, Any]) -> None:
+    def _handle_project_stage(self, project: dict[str, Any]) -> None:
+        """Deliver project payload from current Outbox to configured next target Queue."""
         project_key = project["project_key"]
-        next_pool = project["next_pool"]
-        outbox_dir = self.root_dir / "pools" / "gate" / "Outbox"
-
-        if (outbox_dir / project_key).exists():
-            self._block_project(project_key, "Gate Outbox must contain atomic workorder directories, not the project directory")
+        current_pool = self._get_current_pool(project)
+        next_target = self._get_next_target(project)
+        if current_pool is None or next_target is None:
+            self._registry.update_project(project_key, {"status": "delivered"})
             return
 
-        workorders = [
-            entry for entry in self._iter_directory_entries(outbox_dir)
-            if is_valid_atomic_workorder(entry.name) and entry.name.startswith(f"{project_key}-")
-        ]
-        if not workorders:
+        outbox_dir = self.root_dir / "pools" / current_pool / "Outbox"
+        payloads = self._collect_project_payloads(outbox_dir, project_key)
+        if not payloads:
             return
 
-        for workorder in workorders:
-            self._deliver_payload(project, workorder, next_pool)
+        try:
+            for payload in payloads:
+                self._deliver_payload(project, payload, next_target)
+        except FileExistsError as exc:
+            self._block_project(project_key, str(exc))
+            return
 
         self._advance_project(project)
 
+    def _get_current_pool(self, project: dict[str, Any]) -> str | None:
+        route = project.get("route") or []
+        cursor = project.get("cursor", 0)
+        if route and 0 <= cursor < len(route):
+            return route[cursor]
+        return project.get("current_pool") or project.get("from_pool")
+
+    def _get_next_target(self, project: dict[str, Any]) -> str | None:
+        route = project.get("route") or []
+        cursor = project.get("cursor", 0)
+        if route and cursor + 1 < len(route):
+            return route[cursor + 1]
+        return project.get("next_pool") or project.get("to_pool")
+
     def _advance_project(self, project: dict[str, Any]) -> None:
-        route = project.get("route", [project["from_pool"], project["to_pool"]])
+        route = project.get("route") or []
         current_cursor = project.get("cursor", 0)
-        new_cursor = min(current_cursor + 1, len(route) - 1)
-        current_pool = route[new_cursor]
-        next_pool = route[new_cursor + 1] if new_cursor + 1 < len(route) else None
-        new_status = "in_progress" if next_pool is not None else "delivered"
+        if route:
+            new_cursor = min(current_cursor + 1, len(route) - 1)
+            current_pool = route[new_cursor]
+            next_pool = route[new_cursor + 1] if new_cursor + 1 < len(route) else None
+            new_status = "in_progress" if next_pool is not None else "delivered"
+            self._registry.update_project(
+                project["project_key"],
+                {
+                    "cursor": new_cursor,
+                    "current_pool": current_pool,
+                    "next_pool": next_pool,
+                    "to_pool": next_pool if next_pool is not None else project.get("to_pool"),
+                    "status": new_status,
+                },
+            )
+            return
+
         self._registry.update_project(
             project["project_key"],
             {
-                "cursor": new_cursor,
-                "current_pool": current_pool,
-                "next_pool": next_pool,
-                "status": new_status,
+                "status": "delivered",
             },
         )
 
-    def _previous_pool(self, project: dict[str, Any]) -> str:
-        route = project.get("route", [project["from_pool"], project["to_pool"]])
-        cursor = max(project.get("cursor", 0) - 1, 0)
-        return route[cursor]
-
-    def _active_project_keys_for_pool(self, pool_name: str) -> set[str]:
-        project_keys: set[str] = set()
-        for project_key in self._registry.list_projects():
-            project = self._registry.get_project(project_key)
-            if project is None:
-                continue
-            if project.get("status") in {"blocked", "delivered", "skipped"}:
-                continue
-            if project.get("current_pool") == pool_name:
-                project_keys.add(project_key)
-        return project_keys
-
-    def _iter_directory_entries(self, directory: Path) -> list[Path]:
-        if not directory.exists():
+    def _collect_project_payloads(self, outbox_dir: Path, project_key: str) -> list[Path]:
+        if not outbox_dir.exists():
             return []
-        return sorted((entry for entry in directory.iterdir() if entry.is_dir()), key=lambda entry: entry.name)
+
+        exact_dir = outbox_dir / project_key
+        exact_txt = outbox_dir / f"{project_key}.txt"
+        payloads: list[Path] = []
+
+        if exact_dir.exists():
+            payloads.append(exact_dir)
+        if exact_txt.exists():
+            payloads.append(exact_txt)
+
+        if payloads:
+            return payloads
+
+        matched_payloads: list[Path] = []
+        for entry in sorted(outbox_dir.iterdir(), key=lambda item: item.name):
+            if extract_project_key(entry.name) == project_key:
+                matched_payloads.append(entry)
+        return matched_payloads
 
     def _block_project(self, project_key: str, reason: str) -> None:
         self._registry.update_project(
@@ -204,11 +221,15 @@ class PostRuntime:
         queue_dir.mkdir(parents=True, exist_ok=True)
 
         delivery_path = queue_dir / payload_path.name
+
+        # [Fix] 不再静默覆盖目标 Queue 中已存在的对象。
+        # 若目标已有同名文件/目录，报告冲突而不破坏现有对象。
         if delivery_path.exists():
-            if delivery_path.is_dir():
-                shutil.rmtree(delivery_path)
-            else:
-                delivery_path.unlink()
+            raise FileExistsError(
+                f"Delivery conflict: '{payload_path.name}' already exists in target Queue "
+                f"'{target_pool}/Queue/'. Refusing to overwrite to prevent data loss. "
+                f"Project '{project['project_key']}' will be blocked."
+            )
 
         if payload_path.is_dir():
             shutil.copytree(payload_path, delivery_path)
@@ -232,6 +253,12 @@ class PostRuntime:
             return self._get_status()
         elif method == "GET" and path == "/api/health":
             return self._get_health()
+        elif method == "POST" and path == "/api/control/pause":
+            return self._pause()
+        elif method == "POST" and path == "/api/control/resume":
+            return self._resume()
+        elif method == "GET" and path == "/api/control/state":
+            return self._get_control_state()
         else:
             return {"error": "unknown endpoint"}
 
@@ -265,6 +292,7 @@ class PostRuntime:
             "pool": "post",
             "signal_port": 0,
             "is_running": False,
+            "paused": self._paused,
             "queue_count": 0,
             "slots": [],
             "active_registrations": active_registrations,
@@ -272,6 +300,20 @@ class PostRuntime:
             "blocked_registrations": blocked_registrations,
             "delivered_registrations": delivered_registrations,
             "recent_blocked_reason": recent_blocked_reason,
+        }
+
+    def _pause(self) -> dict[str, Any]:
+        self._paused = True
+        return self._get_control_state()
+
+    def _resume(self) -> dict[str, Any]:
+        self._paused = False
+        return self._get_control_state()
+
+    def _get_control_state(self) -> dict[str, Any]:
+        return {
+            "paused": self._paused,
+            "pool": "post",
         }
 
     def _get_health(self) -> dict[str, Any]:

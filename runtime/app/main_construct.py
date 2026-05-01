@@ -23,6 +23,7 @@ from pathlib import Path
 
 from app.runtimes.construct_runtime import ConstructRuntime
 from app.services.runtime_registry import RuntimeRegistry
+from app.shared.single_instance_guard import SingleInstanceGuard
 
 
 def find_free_port(start: int = 19020, end: int = 19120) -> int:
@@ -108,6 +109,15 @@ def main() -> None:
     logger.info(f"工作区: {root_dir}")
     logger.info(f"日志文件: {log_file}")
 
+    guard = SingleInstanceGuard(root_dir=root_dir, instance_key="construct")
+    success, message = guard.try_acquire(timeout=0.1)
+    if not success:
+        logger.warning(f"Construct Runtime 启动被拒绝: {message}")
+        print(f"[Construct Runtime] {message}")
+        print("提示：如需重启，请先停止现有进程或使用 UI 控制面的 restart 功能")
+        sys.exit(1)
+    logger.info("单实例守护锁已获取")
+
     # 查找空闲端口
     signal_port = args.port or find_free_port()
     logger.info(f"信号服务端口: {signal_port}")
@@ -143,6 +153,7 @@ def main() -> None:
             logger.info("收到关闭信号，正在停止...")
             runtime.stop()
             logger.info("Signal Server 已停止")
+            guard.release()
             registry.register(
                 pool="construct",
                 pid=os.getpid(),
@@ -162,6 +173,8 @@ def main() -> None:
     logger.info("开始监控 Queue 目录...")
     poll_interval = args.poll_interval
     last_check_time = 0
+    consecutive_failures = 0
+    max_backoff = 60.0
 
     while True:
         current_time = time.time()
@@ -170,37 +183,46 @@ def main() -> None:
         if current_time - last_check_time >= poll_interval:
             last_check_time = current_time
 
-            # 更新 registry 心跳
-            registry.heartbeat("construct")
+            try:
+                # 更新 registry 心跳
+                registry.heartbeat("construct")
 
-            # 先检查超时任务
-            timed_out = runtime.check_timeouts()
-            for item in timed_out:
-                logger.warning(
-                    f"任务超时: {item['task_id']} @ {item['slot_id']} after {item['timeout_seconds']}s"
-                )
-
-            # 列出 Queue 中的任务
-            tasks = runtime.list_queue_tasks()
-
-            if tasks:
-                logger.info(f"检测到 {len(tasks)} 个任务")
-
-                # 尝试派发任务
-                result = runtime.dispatch_next(dry_run=False)
-
-                if result["dispatched"]:
-                    logger.info(
-                        f"派发成功: {result['task_id']} -> {result['slot_id']}"
+                # 先检查超时任务
+                timed_out = runtime.check_timeouts()
+                for item in timed_out:
+                    logger.warning(
+                        f"任务超时: {item['task_id']} @ {item['slot_id']} after {item['timeout_seconds']}s"
                     )
-                    launch_result = result.get("launch", {})
-                    if launch_result.get("launched"):
+
+                # 列出 Queue 中的任务
+                tasks = runtime.list_queue_tasks()
+
+                if tasks:
+                    logger.info(f"检测到 {len(tasks)} 个任务")
+
+                    # 尝试派发任务
+                    result = runtime.dispatch_next(dry_run=False)
+
+                    if result["dispatched"]:
                         logger.info(
-                            f"Constructor 进程已启动: PID={launch_result.get('pid')}"
+                            f"派发成功: {result['task_id']} -> {result['slot_id']}"
                         )
-                else:
-                    error = result.get("error", "未知错误")
-                    logger.warning(f"派发失败: {error}")
+                        launch_result = result.get("launch", {})
+                        if launch_result.get("launched"):
+                            logger.info(
+                                f"Constructor 进程已启动: PID={launch_result.get('pid')}"
+                            )
+                    else:
+                        error = result.get("error", "未知错误")
+                        logger.warning(f"派发失败: {error}")
+
+                consecutive_failures = 0
+
+            except Exception as e:
+                consecutive_failures += 1
+                backoff = min(2 ** consecutive_failures, max_backoff)
+                logger.error(f"Cycle failed (attempt {consecutive_failures}): {e}", exc_info=True)
+                time.sleep(backoff)
 
         # 短暂休眠，避免 CPU 占用过高
         time.sleep(0.1)

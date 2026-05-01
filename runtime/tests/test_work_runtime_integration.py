@@ -65,7 +65,7 @@ def test_work_runtime_launch_bat_includes_lifecycle_commands():
 
         # Create task file
         task_file = queue_dir / "task_001.txt"
-        task_file.write_text("TASK_ID: t_001\nFEATURE_ID: feature_login\n\n写一个登录页面", encoding="utf-8")
+        task_file.write_text("PROJECT_KEY: SignalBridge-v1-Build\n\n写一个登录页面", encoding="utf-8")
 
         runtime = WorkRuntime(root_dir=Path(tmpdir), signal_port=18765)
         runtime._lifecycle_tools_dir = tools_dir
@@ -88,7 +88,7 @@ def test_work_runtime_launch_bat_includes_lifecycle_commands():
             bat_content = launch_bat.read_text(encoding="utf-8")
 
             assert "worker_01" in bat_content
-            assert "t_001" in bat_content
+            assert "SignalBridge-v1-Build" in bat_content
             assert "work" in bat_content
             assert "WORK_BOOTSTRAP.txt" in bat_content
 
@@ -204,9 +204,10 @@ def test_launch_manager_injects_signal_server_port_into_worker_env(monkeypatch: 
 
 
 
-def test_work_runtime_signal_server_illegal_transition_rejected():
-    """非法信号转换被拒绝"""
+def test_work_runtime_signal_server_illegal_transition_returns_http_400():
+    """非法信号转换返回 HTTP 400 且不写入事件"""
     from app.services.signal_server import RuntimeSignalServer
+    import urllib.error
 
     with tempfile.TemporaryDirectory() as tmpdir:
         server = RuntimeSignalServer(
@@ -219,7 +220,6 @@ def test_work_runtime_signal_server_illegal_transition_rejected():
         try:
             import urllib.request
 
-            # 跳过 online，直接发 start_writing
             payload = json.dumps({
                 "agent_id": "worker_02",
                 "task_id": "t_002",
@@ -232,25 +232,29 @@ def test_work_runtime_signal_server_illegal_transition_rejected():
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                r = json.loads(resp.read())
 
-            assert r["accepted"] is False
-            assert "illegal transition" in r["reason"]
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req, timeout=5)
+
+            assert exc_info.value.code == 400
+            response = json.loads(exc_info.value.read())
+            assert response["accepted"] is False
+            assert "illegal transition" in response["reason"]
+            assert server.event_store.get_events(agent_id="worker_02") == []
 
         finally:
             server.stop()
 
 
 
-def test_work_runtime_on_signal_hook_fires():
-    """signal 处理后 on_signal hook 被调用"""
+def test_runtime_signal_server_on_signal_hook_fires_for_direct_server():
+    """直接创建的 RuntimeSignalServer 在收到 signal 后调用 on_signal hook"""
     from app.services.signal_server import RuntimeSignalServer
 
     with tempfile.TemporaryDirectory() as tmpdir:
         received = []
         server = RuntimeSignalServer(
-            port=18801,
+            port=18844,
             event_store_dir=Path(tmpdir) / "events",
         )
         server.on_signal = lambda r: received.append(r)
@@ -267,7 +271,7 @@ def test_work_runtime_on_signal_hook_fires():
                 "pool": "work",
             }).encode()
             req = urllib.request.Request(
-                "http://localhost:18801/signal",
+                "http://localhost:18844/signal",
                 data=payload,
                 headers={"Content-Type": "application/json"},
                 method="POST",

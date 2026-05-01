@@ -1,3 +1,10 @@
+"""Manage cross-pool project registration and dependencies.
+
+Provides PostRegistry for tracking project state, dependencies, deliveries,
+and manager actions with project-centric naming and unified JSONStore-based
+storage for cross-process safety.
+"""
+
 import json
 import time
 import uuid
@@ -8,6 +15,21 @@ from app.shared.json_store import JSONStore
 
 
 class PostRegistry:
+    """Project-centric registry for cross-pool task management.
+
+    Uses JSONStore for all storage operations to ensure cross-process
+    safety and consistent file locking protocol.
+
+    Attributes:
+        _root_dir: Root directory for transfers
+        _transfers_dir: Transfers subdirectory
+        _projects_dir: Directory for project files
+        _dependencies_dir: Directory for dependency files
+        _deliveries_dir: Directory for delivery files
+        _actions_dir: Directory for manager action files
+        _index_store: JSONStore for post_index.json
+    """
+
     def __init__(self, root_dir: Path | str):
         self._root_dir = Path(root_dir)
         self._transfers_dir = self._root_dir / "transfers"
@@ -34,6 +56,39 @@ class PostRegistry:
             },
         )
         self._index_store.ensure_initialized()
+        self._migrate_index_schema()
+
+    def _migrate_index_schema(self) -> None:
+        """Migrate legacy post_index.json schema to the project-centric format."""
+        def migrate(data: Any) -> dict[str, Any]:
+            if not isinstance(data, dict):
+                data = {}
+
+            projects = data.get("projects")
+            if not isinstance(projects, list):
+                projects = []
+
+            dependencies = data.get("dependencies")
+            if not isinstance(dependencies, list):
+                dependencies = []
+
+            deliveries = data.get("deliveries")
+            if not isinstance(deliveries, list):
+                legacy_deliveries = data.get("transfers")
+                deliveries = legacy_deliveries if isinstance(legacy_deliveries, list) else []
+
+            manager_actions = data.get("manager_actions")
+            if not isinstance(manager_actions, list):
+                manager_actions = []
+
+            return {
+                "projects": projects,
+                "dependencies": dependencies,
+                "deliveries": deliveries,
+                "manager_actions": manager_actions,
+            }
+
+        self._index_store.update(migrate)
 
     def _project_file(self, project_key: str) -> Path:
         return self._projects_dir / f"{project_key}.json"
@@ -46,6 +101,43 @@ class PostRegistry:
 
     def _manager_action_file(self, action_id: str) -> Path:
         return self._actions_dir / f"{action_id}.json"
+
+    def _safe_read_json_file(self, file_path: Path) -> Any:
+        """Safely read a JSON file, returning None if file is corrupted or missing.
+
+        Uses JSONStore internally for consistent file locking.
+
+        Args:
+            file_path: Path to JSON file
+
+        Returns:
+            Parsed JSON data or None if corrupted/missing
+        """
+        if not file_path.exists():
+            return None
+
+        # Use JSONStore for cross-process safe read with corruption fallback
+        store = JSONStore(
+            file_path,
+            default_factory=lambda: None,
+        )
+        data = store.read()
+        # JSONStore returns default_factory() on corruption, which is None here
+        return data
+
+    def _safe_read_json_list(self, file_path: Path) -> list:
+        """Safely read a JSON file that should contain a list.
+
+        Args:
+            file_path: Path to JSON file
+
+        Returns:
+            List from file, or empty list if corrupted/missing
+        """
+        data = self._safe_read_json_file(file_path)
+        if isinstance(data, list):
+            return data
+        return []
 
     def register_project(
         self,
@@ -88,11 +180,11 @@ class PostRegistry:
             "updated_at": now,
         }
 
-        # Write to file using JSONStore for atomic writes
+        # Write to file using JSONStore for atomic writes with cross-process locking
         project_store = JSONStore(
-            self._project_file(project_key), default_factory=lambda: project_data
+            self._project_file(project_key),
+            default_factory=lambda: project_data,
         )
-        project_store.ensure_initialized()
         project_store.write(project_data)
 
         # Update index
@@ -106,11 +198,8 @@ class PostRegistry:
         return project_data
 
     def get_project(self, project_key: str) -> dict[str, Any] | None:
-        """Get project data by key."""
-        file_path = self._project_file(project_key)
-        if not file_path.exists():
-            return None
-        return json.loads(file_path.read_text(encoding="utf-8"))
+        """Get project data by key. Returns None if missing or corrupted."""
+        return self._safe_read_json_file(self._project_file(project_key))
 
     def update_project(
         self, project_key: str, updates: dict[str, Any]
@@ -121,10 +210,11 @@ class PostRegistry:
             return None
         project.update(updates)
         project["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        # Write using JSONStore for cross-process safe atomic write
         project_store = JSONStore(
             self._project_file(project_key), default_factory=lambda: project
         )
-        project_store.ensure_initialized()
         project_store.write(project)
         return project
 
@@ -151,20 +241,19 @@ class PostRegistry:
             "created_at": now,
         }
 
-        # Load existing dependencies for target project
-        dep_file = self._dependencies_file(target_project_key)
-        if dep_file.exists():
-            existing_deps = json.loads(dep_file.read_text(encoding="utf-8"))
-        else:
-            existing_deps = []
+        # Use JSONStore.update() for atomic read-modify-write
+        dep_store = JSONStore(
+            self._dependencies_file(target_project_key),
+            default_factory=lambda: []
+        )
 
-        # Append new dependency
-        existing_deps.append(dependency_data)
+        def append_dependency(existing_deps: Any) -> list:
+            if not isinstance(existing_deps, list):
+                existing_deps = []
+            existing_deps.append(dependency_data)
+            return existing_deps
 
-        # Write back
-        dep_store = JSONStore(dep_file, default_factory=lambda: existing_deps)
-        dep_store.ensure_initialized()
-        dep_store.write(existing_deps)
+        dep_store.update(append_dependency)
 
         # Update index
         def update_index(data):
@@ -178,11 +267,8 @@ class PostRegistry:
         return dependency_data
 
     def get_dependencies(self, target_project_key: str) -> list[dict[str, Any]]:
-        """Get all dependencies for a target project."""
-        dep_file = self._dependencies_file(target_project_key)
-        if not dep_file.exists():
-            return []
-        return json.loads(dep_file.read_text(encoding="utf-8"))
+        """Get all dependencies for a target project. Returns empty list if corrupted/missing."""
+        return self._safe_read_json_list(self._dependencies_file(target_project_key))
 
     def record_delivery(
         self,
@@ -210,11 +296,10 @@ class PostRegistry:
             "created_at": now,
         }
 
-        # Write delivery file
+        # Write delivery file using JSONStore for cross-process safety
         delivery_store = JSONStore(
             self._delivery_file(delivery_id), default_factory=lambda: delivery_data
         )
-        delivery_store.ensure_initialized()
         delivery_store.write(delivery_data)
 
         # Update index
@@ -227,19 +312,21 @@ class PostRegistry:
         return delivery_data
 
     def list_deliveries(self, project_key: str | None = None) -> list[dict[str, Any]]:
-        """List all deliveries, optionally filtered by project_key."""
+        """List all deliveries, optionally filtered by project_key.
+
+        Skips corrupted delivery files and returns successfully parsed ones.
+        """
         index_data = self._index_store.read()
         delivery_ids = index_data.get("deliveries", [])
 
         deliveries = []
         for delivery_id in delivery_ids:
-            delivery_file = self._delivery_file(delivery_id)
-            if delivery_file.exists():
-                delivery_data = json.loads(
-                    delivery_file.read_text(encoding="utf-8")
-                )
-                if project_key is None or delivery_data.get("project_key") == project_key:
-                    deliveries.append(delivery_data)
+            delivery_data = self._safe_read_json_file(self._delivery_file(delivery_id))
+            if delivery_data is None:
+                # File missing or corrupted - skip silently
+                continue
+            if project_key is None or delivery_data.get("project_key") == project_key:
+                deliveries.append(delivery_data)
 
         return deliveries
 
@@ -261,11 +348,10 @@ class PostRegistry:
             "created_at": now,
         }
 
-        # Write action file
+        # Write action file using JSONStore for cross-process safety
         action_store = JSONStore(
             self._manager_action_file(action_id), default_factory=lambda: action_data
         )
-        action_store.ensure_initialized()
         action_store.write(action_data)
 
         # Update index
@@ -280,17 +366,21 @@ class PostRegistry:
     def list_manager_actions(
         self, project_key: str | None = None
     ) -> list[dict[str, Any]]:
-        """List all manager actions, optionally filtered by project_key."""
+        """List all manager actions, optionally filtered by project_key.
+
+        Skips corrupted action files and returns successfully parsed ones.
+        """
         index_data = self._index_store.read()
         action_ids = index_data.get("manager_actions", [])
 
         actions = []
         for action_id in action_ids:
-            action_file = self._manager_action_file(action_id)
-            if action_file.exists():
-                action_data = json.loads(action_file.read_text(encoding="utf-8"))
-                if project_key is None or action_data.get("project_key") == project_key:
-                    actions.append(action_data)
+            action_data = self._safe_read_json_file(self._manager_action_file(action_id))
+            if action_data is None:
+                # File missing or corrupted - skip silently
+                continue
+            if project_key is None or action_data.get("project_key") == project_key:
+                actions.append(action_data)
 
         return actions
 
@@ -366,5 +456,3 @@ class PostRegistry:
         )
 
         return updated_project
-
-

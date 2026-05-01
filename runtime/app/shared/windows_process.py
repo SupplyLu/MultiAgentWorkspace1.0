@@ -46,6 +46,7 @@ def assign_process_to_job(job_handle: int, pid: int) -> bool:
     import win32con
     import win32job
 
+    process_handle = None
     try:
         process_handle = win32api.OpenProcess(
             win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE,
@@ -53,10 +54,15 @@ def assign_process_to_job(job_handle: int, pid: int) -> bool:
             pid,
         )
         win32job.AssignProcessToJobObject(job_handle, process_handle)
-        win32api.CloseHandle(process_handle)
         return True
     except Exception:
         return False
+    finally:
+        if process_handle is not None:
+            try:
+                win32api.CloseHandle(process_handle)
+            except Exception:
+                pass
 
 
 

@@ -21,7 +21,7 @@ def test_gate_accepts_queue_folders_not_txt():
         batch_folder = queue_dir / "batch_t_pmsm_foc_sim_002"
         batch_folder.mkdir()
         summary_file = batch_folder / "summary.txt"
-        summary_file.write_text("TASK_ID: batch_t_pmsm_foc_sim_002\n---\nBatch summary", encoding="utf-8")
+        summary_file.write_text("PROJECT_KEY: batch_t_pmsm_foc_sim_002\n---\nBatch summary", encoding="utf-8")
 
         # Create some work task files inside
         (batch_folder / "task_t_pmsm_w001.txt").write_text("FROM: construct\nTO: gate\n---\nWork task 1", encoding="utf-8")
@@ -53,7 +53,7 @@ def test_gate_preprocesses_batch_folder():
         batch_folder = queue_dir / "batch_t_pmsm_foc_sim_002"
         batch_folder.mkdir()
         summary_file = batch_folder / "summary.txt"
-        summary_file.write_text("TASK_ID: batch_t_pmsm_foc_sim_002\n---\nBatch summary", encoding="utf-8")
+        summary_file.write_text("PROJECT_KEY: batch_t_pmsm_foc_sim_002\n---\nBatch summary", encoding="utf-8")
         (batch_folder / "task_t_pmsm_w001.txt").write_text("FROM: construct\nTO: gate\n---\nWork task 1", encoding="utf-8")
 
         runtime = GateRuntime(root_dir=root, signal_port=19299)
@@ -88,7 +88,7 @@ def test_gate_generates_batch_reference_task():
         batch_folder = queue_dir / "batch_t_pmsm_foc_sim_002"
         batch_folder.mkdir()
         summary_file = batch_folder / "summary.txt"
-        summary_file.write_text("TASK_ID: batch_t_pmsm_foc_sim_002\n---\nBatch summary", encoding="utf-8")
+        summary_file.write_text("PROJECT_KEY: batch_t_pmsm_foc_sim_002\n---\nBatch summary", encoding="utf-8")
         (batch_folder / "task_t_pmsm_w001.txt").write_text("FROM: construct\nTO: gate\n---\nWork task 1", encoding="utf-8")
 
         runtime = GateRuntime(root_dir=root, signal_port=19299)

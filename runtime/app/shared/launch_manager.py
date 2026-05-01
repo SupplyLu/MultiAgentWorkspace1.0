@@ -45,11 +45,14 @@ class LaunchManager:
         if job_handle is None:
             return {"cleaned": False, "reason": "missing_or_already_cleaned"}
 
-        # Take the handle and immediately clear it to prevent double cleanup
-        launch_result["job_handle"] = None
+        success = terminate_job(job_handle)
+        if success:
+            launch_result["job_handle"] = None
+
         return {
-            "cleaned": terminate_job(job_handle),
-            "job_handle": job_handle,
+            "cleaned": success,
+            "job_handle": job_handle if not success else None,
+            "reason": "terminated" if success else "terminate_failed",
         }
 
     def resolve_claude_command(self) -> str:

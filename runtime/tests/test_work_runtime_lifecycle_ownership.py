@@ -29,7 +29,7 @@ def test_dispatch_next_deploys_lifecycle_bats_to_worker_slot(tmp_path):
     # Create a task file
     task_file = queue_dir / "task_001.txt"
     task_file.write_text(
-        "TASK_ID: t_001\nFEATURE_ID: f_test\nPOOL: work\n\ntest body",
+        "PROJECT_KEY: SignalBridge-v1-Build\nPOOL: work\n\ntest body",
         encoding="utf-8",
     )
 
@@ -95,7 +95,7 @@ def test_dispatch_next_generated_bat_not_overwritten_by_launch_manager(tmp_path)
     # Create task
     task_file = queue_dir / "task_002.txt"
     task_file.write_text(
-        "TASK_ID: t_002\nFEATURE_ID: f_test\nPOOL: work\n\ntest body",
+        "PROJECT_KEY: SignalBridge-v2-Build\nPOOL: work\n\ntest body",
         encoding="utf-8",
     )
 
@@ -149,7 +149,7 @@ def test_dispatch_next_generated_bat_not_overwritten_by_launch_manager(tmp_path)
 
         # The fixed bat SHOULD contain evidence of Runtime prompt injection
         # Either task_id from RuntimePromptBuilder OR lifecycle bat calls
-        assert ("Online.bat" in bat_content or "t_002" in bat_content), (
+        assert ("Online.bat" in bat_content or "SignalBridge-v2-Build" in bat_content), (
             "Bat does not contain Runtime-injected content"
         )
 
@@ -396,7 +396,7 @@ def test_dispatch_next_enables_job_object_and_visible_console(tmp_path):
 
     task_file = queue_dir / "task_008.txt"
     task_file.write_text(
-        "TASK_ID: t_008\nFEATURE_ID: f_test\nPOOL: work\n\ntest body",
+        "PROJECT_KEY: SignalBridge-v8-Build\nPOOL: work\n\ntest body",
         encoding="utf-8",
     )
 
@@ -498,7 +498,7 @@ def test_slot_cleanup_on_done_signal(tmp_path):
 
     # Create task
     task_file = queue_dir / "task_cleanup.txt"
-    task_file.write_text("TASK_ID: t_cleanup\n\nbody", encoding="utf-8")
+    task_file.write_text("PROJECT_KEY: SignalBridge-v1-Cleanup\n\nbody", encoding="utf-8")
 
     runtime = WorkRuntime(root_dir=tmp_path, signal_port=18890)
     runtime._lifecycle_tools_dir = tools_dir
@@ -533,7 +533,7 @@ def test_slot_cleanup_on_done_signal(tmp_path):
         # Send done signal
         runtime.handle_signal({
             "agent_id": "worker_01",
-            "task_id": "t_cleanup",
+            "task_id": "SignalBridge-v1-Cleanup",
             "signal": "done",
             "is_terminal": True,
         })

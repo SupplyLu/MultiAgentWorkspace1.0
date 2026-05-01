@@ -21,8 +21,7 @@ def main():
     # 创建一个简单任务
     task_file = queue_dir / "demo_task.txt"
     task_file.write_text(
-        """TASK_ID: demo_001
-FEATURE_ID: demo_feature
+        """PROJECT_KEY: SignalBridge-v1-Demo
 POOL: work
 
 请在你的 workspace 目录创建一个 hello.txt 文件，内容为 "Hello from WorkRuntime!"

@@ -23,6 +23,10 @@ class PostProgressReader:
                 "stage": "idle",
                 "blocked": False,
                 "block_reason": None,
+                "active_registrations": 0,
+                "waiting_payload_registrations": 0,
+                "blocked_registrations": 0,
+                "delivered_registrations": 0,
             }
 
         index_data = json.loads(self._index_file.read_text(encoding="utf-8"))
@@ -34,6 +38,10 @@ class PostProgressReader:
         blocked = False
         block_reason = None
         stage = "idle"
+        active_registrations = 0
+        waiting_payload_registrations = 0
+        blocked_registrations = 0
+        delivered_registrations = 0
 
         for project_key in project_keys:
             project_file = self._projects_dir / f"{project_key}.json"
@@ -45,16 +53,23 @@ class PostProgressReader:
 
             total += 1
             current_pool = project_data.get("current_pool") or current_pool
+            status = project_data.get("status")
 
-            if project_data.get("status") in {"in_progress", "waiting"}:
+            if status == "in_progress":
                 stage = "processing"
-            elif project_data.get("status") == "blocked":
+                active_registrations += 1
+            elif status == "waiting":
+                stage = "processing"
+                waiting_payload_registrations += 1
+            elif status == "blocked":
                 stage = "blocked"
                 blocked = True
+                blocked_registrations += 1
                 if not block_reason:
                     block_reason = project_data.get("blocked_reason") or "Project processing failed"
-            elif project_data.get("status") == "delivered":
+            elif status == "delivered":
                 completed += 1
+                delivered_registrations += 1
 
         percentage = int((completed / total) * 100) if total else 0
 
@@ -66,4 +81,8 @@ class PostProgressReader:
             "stage": stage,
             "blocked": blocked,
             "block_reason": block_reason,
+            "active_registrations": active_registrations,
+            "waiting_payload_registrations": waiting_payload_registrations,
+            "blocked_registrations": blocked_registrations,
+            "delivered_registrations": delivered_registrations,
         }
