@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from app.desktop_ui.services.pool_registry_service import PoolRegistryService
 from app.services.runtime_registry import RuntimeRegistry
 
 
@@ -31,11 +32,10 @@ def _is_pid_alive(pid: int) -> bool:
 
 
 class RegistryReader:
-    ALL_POOLS = ["work", "thinking", "construct", "gate", "post", "package"]
-
     def __init__(self, root_dir: Path | str):
         self._root_dir = Path(root_dir)
         self._registry = RuntimeRegistry(root_dir=self._root_dir)
+        self._pool_registry = PoolRegistryService(root_dir=self._root_dir)
 
     def list_running_pools(self) -> list[dict[str, Any]]:
         all_pools = self._registry.list_all()
@@ -44,7 +44,8 @@ class RegistryReader:
 
     def list_all_pools(self) -> list[dict[str, Any]]:
         entries = []
-        for pool in self.ALL_POOLS:
+        for pool_meta in self._pool_registry.list_all_pools():
+            pool = pool_meta.get("pool_id", "unknown")
             runtime_info = self._registry.get(pool)
             if runtime_info is None:
                 entries.append(

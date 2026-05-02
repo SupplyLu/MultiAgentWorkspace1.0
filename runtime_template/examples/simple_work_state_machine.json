@@ -1,0 +1,49 @@
+{
+  "pool_id": "simple_work",
+  "initial_state": "state_0",
+  "terminal_states": ["state_3", "state_timeout"],
+  "transitions": [
+    {
+      "from_state": "state_0",
+      "to_state": "state_1",
+      "allowed_signals": ["online"],
+      "description": "idle -> online"
+    },
+    {
+      "from_state": "state_1",
+      "to_state": "state_2",
+      "allowed_signals": ["start_working"],
+      "description": "online -> working"
+    },
+    {
+      "from_state": "state_2",
+      "to_state": "state_3",
+      "allowed_signals": ["done"],
+      "description": "working -> done"
+    },
+    {
+      "from_state": "state_1",
+      "to_state": "state_timeout",
+      "allowed_signals": ["timeout"],
+      "description": "online -> timeout"
+    },
+    {
+      "from_state": "state_2",
+      "to_state": "state_timeout",
+      "allowed_signals": ["timeout"],
+      "description": "working -> timeout"
+    },
+    {
+      "from_state": "state_1",
+      "to_state": "state_0",
+      "allowed_signals": ["blocked", "failed"],
+      "description": "online -> reset"
+    },
+    {
+      "from_state": "state_2",
+      "to_state": "state_0",
+      "allowed_signals": ["blocked", "failed"],
+      "description": "working -> reset"
+    }
+  ]
+}

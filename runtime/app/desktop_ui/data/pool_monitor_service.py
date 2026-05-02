@@ -8,19 +8,12 @@ from typing import Any
 from app.desktop_ui.data.post_progress_reader import PostProgressReader
 from app.desktop_ui.data.registry_reader import RegistryReader
 from app.desktop_ui.data.runtime_client import RuntimeClient
+from app.desktop_ui.services.pool_registry_service import PoolRegistryService
 from app.services.timeout_defaults_store import TimeoutDefaultsStore
 
 
 class PoolMonitorService:
     """Aggregates runtime and slot status from all pools for dashboard monitoring."""
-
-    SLOT_PREFIXES = {
-        "work": ("worker_",),
-        "thinking": ("sub_brain_",),
-        "construct": ("constructor_",),
-        "gate": ("guard_",),
-        "package": ("cutter_", "tester_", "releaser_", "complete_player_"),
-    }
 
     def __init__(self, root_dir: Path | str):
         self._root_dir = Path(root_dir)
@@ -28,9 +21,16 @@ class PoolMonitorService:
         self._runtime_client = RuntimeClient(root_dir=self._root_dir)
         self._post_progress_reader = PostProgressReader(self._root_dir / "transfers")
         self._timeout_defaults = TimeoutDefaultsStore(root_dir=self._root_dir)
+        self._pool_registry = PoolRegistryService(root_dir=self._root_dir)
+
+    def _get_slot_prefixes(self, pool_name: str) -> tuple[str, ...]:
+        meta = self._pool_registry.get_pool_meta(pool_name)
+        if not meta:
+            return ()
+        return tuple(meta.get("slot_prefixes", []))
 
     def _scan_slot_directories(self, pool_name: str) -> list[dict[str, Any]]:
-        prefixes = self.SLOT_PREFIXES.get(pool_name)
+        prefixes = self._get_slot_prefixes(pool_name)
         if not prefixes:
             return []
         pool_dir = self._root_dir / "pools" / pool_name
@@ -67,7 +67,7 @@ class PoolMonitorService:
             status_value = pool_entry.get("status", "stopped")
             runtime_online = status_value == "running"
             default_timeout_seconds = None
-            if pool_name in self.SLOT_PREFIXES:
+            if self._get_slot_prefixes(pool_name):
                 default_timeout_seconds = self._timeout_defaults.get(pool_name)
 
             if pool_name == "post":

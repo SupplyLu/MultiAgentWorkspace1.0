@@ -114,6 +114,7 @@ class PackageRuntime:
         signal_port: int = 19300,
     ):
         self._root_dir = Path(root_dir)
+        self._signal_port = signal_port
         self._timeout_defaults = TimeoutDefaultsStore(root_dir=self._root_dir)
 
         # 池目录
@@ -621,7 +622,9 @@ STAGE_RESULTS:
         }
 
     def check_timeouts(self) -> list[dict[str, Any]]:
-        """检查超时任务"""
+        """检查超时和进程死亡任务"""
+        from app.shared.windows_process import is_process_alive_via_job
+
         timed_out = []
         current_time = time.time()
 
@@ -631,39 +634,51 @@ STAGE_RESULTS:
                     continue
 
                 elapsed = current_time - slot.assigned_at_epoch
-                if elapsed > slot.timeout_seconds:
-                    task = self._tasks.get(slot.assigned_task_id)
-                    if task:
-                        timed_out.append({
-                            "slot_id": slot.slot_id,
-                            "task_id": slot.assigned_task_id,
-                            "timeout_seconds": slot.timeout_seconds,
-                            "elapsed_seconds": elapsed,
-                        })
+                is_timeout = elapsed > slot.timeout_seconds
+                is_dead = False
 
-                        # 清理进程
-                        if slot.launch_result is not None:
-                            self._launch_manager.cleanup_launch(slot.launch_result)
+                if not is_timeout and slot.launch_result:
+                    job_handle = slot.launch_result.get("job_handle")
+                    if job_handle and not is_process_alive_via_job(job_handle):
+                        is_dead = True
 
-                        # 写超时拒绝标记
-                        task.current_stage = "timeout"
-                        self._write_rejectbox_marker(task, f"{task.current_stage}_timeout")
+                if not is_timeout and not is_dead:
+                    continue
 
-                        # 重新放回 Queue
-                        self._requeue_task(task)
+                task = self._tasks.get(slot.assigned_task_id)
+                if task:
+                    reason = "timeout" if is_timeout else "process_died"
+                    timed_out.append({
+                        "slot_id": slot.slot_id,
+                        "task_id": slot.assigned_task_id,
+                        "timeout_seconds": slot.timeout_seconds,
+                        "elapsed_seconds": elapsed,
+                        "reason": reason,
+                    })
 
-                        # 清理槽位
-                        self._clean_slot_dir(slot)
-                        slot.busy = False
-                        slot.finalizing = False
-                        slot.assigned_task_id = ""
-                        slot.assigned_project_name = ""
-                        slot.launch_result = None
-                        slot.assigned_at_epoch = 0.0
-                        slot.last_known_state = "state_0"
+                    # 清理进程
+                    if slot.launch_result is not None:
+                        self._launch_manager.cleanup_launch(slot.launch_result)
 
-                        # 清理任务跟踪
-                        del self._tasks[task.task_id]
+                    # 写超时拒绝标记
+                    task.current_stage = reason
+                    self._write_rejectbox_marker(task, f"{task.current_stage}_{reason}")
+
+                    # 重新放回 Queue
+                    self._requeue_task(task)
+
+                    # 清理槽位
+                    self._clean_slot_dir(slot)
+                    slot.busy = False
+                    slot.finalizing = False
+                    slot.assigned_task_id = ""
+                    slot.assigned_project_name = ""
+                    slot.launch_result = None
+                    slot.assigned_at_epoch = 0.0
+                    slot.last_known_state = "state_0"
+
+                    # 清理任务跟踪
+                    del self._tasks[task.task_id]
 
         return timed_out
 
@@ -744,6 +759,8 @@ PREVIOUS_STAGE: {task.current_stage}
 
     def _get_status(self) -> dict[str, Any]:
         """Return current runtime status with pool info and slot states."""
+        from app.shared.windows_process import is_process_alive_via_job
+
         with self._lock:
             slots_data = []
             for slot_id in sorted(self._slots.keys()):
@@ -755,6 +772,10 @@ PREVIOUS_STAGE: {task.current_stage}
 
                 # Determine current_state from last_known_state
                 current_state = slot.last_known_state if slot.last_known_state != "state_0" else ("state_1" if slot.busy else "idle")
+                if slot.busy and slot.launch_result:
+                    job_handle = slot.launch_result.get("job_handle")
+                    if job_handle and not is_process_alive_via_job(job_handle):
+                        current_state = "process_died"
 
                 slots_data.append({
                     "slot_id": slot.slot_id,

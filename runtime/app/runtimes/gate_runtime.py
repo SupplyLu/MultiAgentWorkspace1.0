@@ -51,6 +51,7 @@ class GateRuntime:
         signal_port: int = 19200,
     ):
         self._root_dir = Path(root_dir)
+        self._signal_port = signal_port
         self._timeout_defaults = TimeoutDefaultsStore(root_dir=self._root_dir)
 
         self._gate_pool_dir = self._root_dir / "pools" / "gate"
@@ -274,12 +275,7 @@ Instructions:
 
         task_data = parse_task_file(task_file)
         if task_data is None:
-            with self._lock:
-                slot.busy = False
-            try:
-                task_file.unlink()
-            except OSError:
-                pass
+            self._rollback_dispatch(slot, task_file, task_file.name[:-11] if task_file.name.endswith(".processing") else task_file.name, raw_content)
             return {"dispatched": False, "error": "Failed to parse task file (invalid or disappeared)"}
         headers = task_data.get("headers", {})
         project_key = headers.get("PROJECT_KEY", "")
@@ -287,12 +283,7 @@ Instructions:
         if not project_key:
             project_key = headers.get("TASK_ID", "")
         if not project_key:
-            with self._lock:
-                slot.busy = False
-            try:
-                task_file.unlink()
-            except OSError:
-                pass
+            self._rollback_dispatch(slot, task_file, task_file.name[:-11] if task_file.name.endswith(".processing") else task_file.name, raw_content)
             return {"dispatched": False, "error": "PROJECT_KEY is required"}
         task_id = project_key
         timeout_seconds = self._parse_timeout_seconds(headers)
@@ -342,7 +333,7 @@ exit /b %ERRORLEVEL%
         except Exception:
             if worker_task_file.exists():
                 worker_task_file.unlink()
-            slot.busy = False
+            self._rollback_dispatch(slot, task_file, original_name, raw_content)
             raise
 
         try:
@@ -392,6 +383,46 @@ exit /b %ERRORLEVEL%
 
         if should_finalize and slot is not None:
             self._finalize_slot_terminal(slot, signal=signal, task_id=normalized_task_id)
+
+    def _rollback_dispatch(
+        self,
+        slot: GuardSlot,
+        task_file: Path,
+        original_name: str,
+        raw_content: str,
+    ) -> None:
+        """
+        Roll back a failed dispatch: restore queue task file and reset slot.
+
+        Called when _deploy_lifecycle_bats() or LaunchManager.launch() raises.
+        The task file has been renamed to .processing; this renames it back.
+        """
+        # Restore task to queue
+        queue_dir = self._queue_dir
+        restored = queue_dir / original_name
+        try:
+            task_file.rename(restored)
+        except OSError:
+            # If rename back fails, write the content directly
+            restored.write_text(raw_content, encoding="utf-8")
+
+        # Remove any worker task file that was copied
+        worker_task = slot.slot_dir / original_name
+        if worker_task.exists():
+            worker_task.unlink()
+
+        # Clean all deployed files from slot, keep workspace
+        self._clean_slot_dir(slot)
+
+        # Reset slot fields
+        with self._lock:
+            slot.busy = False
+            slot.finalizing = False
+            slot.assigned_task_id = ""
+            slot.launch_result = None
+            slot.assigned_at_epoch = 0.0
+            slot.timeout_seconds = self._timeout_defaults.get("gate")
+            slot.last_known_state = "state_0"
 
     def _cleanup_project_field(self, task_id: str) -> None:
         field_dir = self._gate_fields_dir / task_id
@@ -459,50 +490,28 @@ exit /b %ERRORLEVEL%
         return f"{task_id}-{seq}-{suffix}.txt"
 
     def collect_artifacts_to_outbox(self, slot_id: str, task_id: str) -> dict[str, Any]:
+        """Copy only .txt files from workspace into Outbox/{task_id}/ directory."""
         slot = self._slots.get(slot_id)
         if slot is None:
             return {"collected": False, "reason": "slot_not_found"}
         if not slot.workspace_dir.exists():
             return {"collected": False, "reason": "workspace_missing"}
 
-        self._outbox_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self._outbox_dir / task_id
+        out_dir.mkdir(parents=True, exist_ok=True)
 
         copied_files: list[str] = []
-        from app.services.post_naming import is_valid_atomic_workorder, is_valid_project_key
-
-        task_files = sorted(slot.workspace_dir.glob("task_*.txt"))
-        if task_files and is_valid_project_key(task_id):
-            renamed_task_files = [
-                (task_file, self._build_project_outbox_name(task_id, task_file))
-                for task_file in task_files
-            ]
-            for task_file, outbox_name in renamed_task_files:
-                if outbox_name is None:
-                    continue
-                dst = self._outbox_dir / outbox_name
-                shutil.copy2(task_file, dst)
-                copied_files.append(outbox_name)
-        elif task_files and not is_valid_atomic_workorder(task_id):
-            for item in task_files:
-                dst = self._outbox_dir / item.name
-                shutil.copy2(item, dst)
-                copied_files.append(str(item.relative_to(slot.workspace_dir)))
-        else:
-            out_dir = self._outbox_dir / task_id
-            out_dir.mkdir(parents=True, exist_ok=True)
-            for item in slot.workspace_dir.rglob("*"):
-                if not item.is_file():
-                    continue
-                rel = item.relative_to(slot.workspace_dir)
-                dst = out_dir / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(item, dst)
-                copied_files.append(str(rel))
+        for item in slot.workspace_dir.iterdir():
+            if not item.is_file() or item.suffix != ".txt":
+                continue
+            dst = out_dir / item.name
+            shutil.copy2(item, dst)
+            copied_files.append(item.name)
 
         return {
             "collected": True,
             "task_id": task_id,
-            "outbox_dir": str(self._outbox_dir),
+            "outbox_dir": str(out_dir),
             "files": copied_files,
         }
 
@@ -578,7 +587,9 @@ exit /b %ERRORLEVEL%
                 continue
 
     def check_timeouts(self) -> list[dict[str, Any]]:
-        """Kill timed-out guards and requeue the original task until approved/rejected."""
+        """Kill timed-out or dead guards and requeue the original task until approved/rejected."""
+        from app.shared.windows_process import is_process_alive_via_job
+
         with self._lock:
             now = time.time()
             timed_out: list[dict[str, Any]] = []
@@ -588,11 +599,21 @@ exit /b %ERRORLEVEL%
                     continue
                 if slot.assigned_at_epoch <= 0:
                     continue
-                if now - slot.assigned_at_epoch < slot.timeout_seconds:
+
+                is_timeout = now - slot.assigned_at_epoch >= slot.timeout_seconds
+                is_dead = False
+
+                if not is_timeout and slot.launch_result:
+                    job_handle = slot.launch_result.get("job_handle")
+                    if job_handle and not is_process_alive_via_job(job_handle):
+                        is_dead = True
+
+                if not is_timeout and not is_dead:
                     continue
 
                 task_id = slot.assigned_task_id
                 timeout_seconds = slot.timeout_seconds
+                reason = "timeout" if is_timeout else "process_died"
                 claimed_launch_result = slot.launch_result
                 slot.finalizing = True
                 slot.launch_result = None
@@ -621,6 +642,7 @@ exit /b %ERRORLEVEL%
                     "slot_id": slot.slot_id,
                     "task_id": task_id,
                     "timeout_seconds": timeout_seconds,
+                    "reason": reason,
                 })
 
             return timed_out
@@ -693,11 +715,17 @@ exit /b %ERRORLEVEL%
 
     def _get_status(self) -> dict[str, Any]:
         """Return current runtime status with pool info and slot states."""
+        from app.shared.windows_process import is_process_alive_via_job
+
         with self._lock:
             slots_data = []
             for slot_id in sorted(self._slots.keys()):
                 slot = self._slots[slot_id]
                 current_state = slot.last_known_state if slot.last_known_state != "state_0" else ("state_1" if slot.busy else "idle")
+                if slot.busy and slot.launch_result:
+                    job_handle = slot.launch_result.get("job_handle")
+                    if job_handle and not is_process_alive_via_job(job_handle):
+                        current_state = "process_died"
                 slots_data.append({
                     "slot_id": slot.slot_id,
                     "busy": slot.busy,

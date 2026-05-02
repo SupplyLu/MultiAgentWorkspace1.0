@@ -9,7 +9,19 @@ import time
 from pathlib import Path
 
 from app.services.runtime_registry import RuntimeRegistry
+from app.desktop_ui.services.pool_registry_service import PoolRegistryService
 from app.shared.windows_process import kill_process
+
+
+# Built-in pool entrypoint map (fallback when registry is missing)
+_BUILTIN_ENTRY_MAP = {
+    "work": "main.py",
+    "thinking": "main_thinking.py",
+    "construct": "main_construct.py",
+    "gate": "main_gate.py",
+    "post": "main_post.py",
+    "package": "main_package.py",
+}
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -34,23 +46,25 @@ def _is_pid_alive(pid: int) -> bool:
 
 
 class RuntimeCommandBridge:
-    ENTRY_MAP = {
-        "work": "main.py",
-        "thinking": "main_thinking.py",
-        "construct": "main_construct.py",
-        "gate": "main_gate.py",
-        "post": "main_post.py",
-        "package": "main_package.py",
-    }
-
     def __init__(self, root_dir: Path | str | None = None):
         self._root_dir = Path(root_dir) if root_dir else Path(__file__).resolve().parents[4]
         self._registry = RuntimeRegistry(root_dir=self._root_dir)
+        self._pool_registry = PoolRegistryService(root_dir=self._root_dir)
+
+    def _get_runtime_entry(self, pool: str) -> str | None:
+        """Get runtime entry script for a pool from registry or fallback."""
+        meta = self._pool_registry.get_pool_meta(pool)
+        if meta:
+            entry = meta.get("runtime_entry")
+            if entry:
+                return entry
+        return _BUILTIN_ENTRY_MAP.get(pool)
 
     def start_pool(self, pool: str) -> dict[str, bool | str]:
         try:
-            if pool not in self.ENTRY_MAP:
-                return {"success": False, "error": f"Unknown pool: {pool}"}
+            entry = self._get_runtime_entry(pool)
+            if not entry:
+                return {"success": False, "error": f"No runtime entry configured for pool: {pool}"}
 
             existing = self._registry.get(pool)
             if isinstance(existing, dict) and existing.get("status") == "running":
@@ -59,7 +73,7 @@ class RuntimeCommandBridge:
                     return {"success": False, "error": f"Pool already running: {pool}"}
                 self._registry.register(pool=pool, pid=0, port=0, status="stopped")
 
-            script = self.ENTRY_MAP[pool]
+            script = entry
             runtime_dir = self._root_dir / "runtime"
             process = subprocess.Popen(
                 ["python", "-m", f"app.{script[:-3]}"],

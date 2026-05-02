@@ -96,11 +96,6 @@ def query_job_process_count(job_handle: int) -> int:
 
 
 
-def is_process_alive_via_job(job_handle: int) -> bool:
-    return query_job_process_count(job_handle) > 0
-
-
-
 def build_taskkill_command(pid: int, force: bool = False, tree: bool = False) -> list[str]:
     command = ["taskkill", "/PID", str(pid)]
     if tree:

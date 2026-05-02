@@ -1,0 +1,43 @@
+{
+  "pool_id": "review",
+  "initial_state": "state_0",
+  "terminal_states": ["state_3_approved", "state_3_rejected"],
+  "transitions": [
+    {
+      "from_state": "state_0",
+      "to_state": "state_1",
+      "allowed_signals": ["online"],
+      "description": "idle -> online"
+    },
+    {
+      "from_state": "state_1",
+      "to_state": "state_2",
+      "allowed_signals": ["start_review"],
+      "description": "online -> reviewing"
+    },
+    {
+      "from_state": "state_2",
+      "to_state": "state_3_approved",
+      "allowed_signals": ["approved"],
+      "description": "reviewing -> approved"
+    },
+    {
+      "from_state": "state_2",
+      "to_state": "state_3_rejected",
+      "allowed_signals": ["rejected"],
+      "description": "reviewing -> rejected"
+    },
+    {
+      "from_state": "state_1",
+      "to_state": "state_0",
+      "allowed_signals": ["blocked", "failed"],
+      "description": "online -> reset"
+    },
+    {
+      "from_state": "state_2",
+      "to_state": "state_0",
+      "allowed_signals": ["blocked", "failed"],
+      "description": "reviewing -> reset"
+    }
+  ]
+}

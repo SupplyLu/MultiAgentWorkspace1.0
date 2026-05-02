@@ -2,7 +2,7 @@
 from app.shared.json_store import JSONStore, ensure_json_file
 from app.shared.windows_process import (
     is_windows, create_job_object, assign_process_to_job,
-    terminate_job, query_job_process_count, kill_process,
+    terminate_job, query_job_process_count, is_process_alive_via_job, kill_process,
     build_taskkill_command, open_in_explorer
 )
 from app.shared.file_queue import (

@@ -315,7 +315,7 @@ class SlotStatusInferer:
             return "离线", "gray"
         if not enabled:
             return "已下线", "gray"
-        if state in {"error", "failed", "exception", "abnormal"}:
+        if state in {"error", "failed", "exception", "abnormal", "process_died"}:
             return "异常", "yellow"
         if busy:
             return "工作中", "green"

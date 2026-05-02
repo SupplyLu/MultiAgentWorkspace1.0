@@ -27,6 +27,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for environments with
             self.clicked = _Signal()
 
 from app.desktop_ui.views.project_register_dialog import ProjectRegisterDialog
+from app.desktop_ui.views.create_pool_dialog import CreatePoolDialog
 
 
 class ProjectsView(QWidget):
@@ -34,11 +35,17 @@ class ProjectsView(QWidget):
         super().__init__()
         self.progress_reader = progress_reader
         self._register_dialog = None
+        self._create_pool_dialog = None
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("项目视图"))
+
         self._register_button = QPushButton("新建注册")
         layout.addWidget(self._register_button)
         self._register_button.clicked.connect(self._on_register_click)
+
+        self._create_pool_button = QPushButton("创建池")
+        layout.addWidget(self._create_pool_button)
+        self._create_pool_button.clicked.connect(self._on_create_pool_click)
 
     def open_register_dialog(self):
         """Create, show, and return the registration dialog."""
@@ -50,6 +57,17 @@ class ProjectsView(QWidget):
     def _on_register_click(self):
         """Handle register button click."""
         return self.open_register_dialog()
+
+    def open_create_pool_dialog(self):
+        """Create, show, and return the create pool dialog."""
+        self._create_pool_dialog = CreatePoolDialog(self)
+        if hasattr(self._create_pool_dialog, "show"):
+            self._create_pool_dialog.show()
+        return self._create_pool_dialog
+
+    def _on_create_pool_click(self):
+        """Handle create pool button click."""
+        return self.open_create_pool_dialog()
 
     def get_progress_summary(self, project_name: str) -> str:
         if not self.progress_reader:
